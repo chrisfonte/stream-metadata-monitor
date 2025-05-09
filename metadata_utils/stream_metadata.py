@@ -110,6 +110,7 @@ class StreamMetadata:
         self.last_type = current_type
 
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+        print(self.stream_url)
         if metadata.get('title'):
             if metadata.get('type') == 'ad':
                 print("📢 Now Playing (Ad):")
@@ -375,7 +376,9 @@ output.dummy(fallible=true, s)
             self.stop_flag.set()
 
     def display_ad_metadata(self, ad_metadata: dict):
-        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n📢 Now Playing (Ad):")
+        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+        print(self.stream_url)
+        print("📢 Now Playing (Ad):")
         for k, v in ad_metadata.items():
             if k == 'adswizzContext_json':
                 print(f"  adswizzContext (decoded):\n{v}")

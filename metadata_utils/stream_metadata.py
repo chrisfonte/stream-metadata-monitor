@@ -18,7 +18,7 @@ import logging
 import argparse
 
 # Configuration
-ENABLE_AUDIO = True  # Set to False to disable audio output
+ENABLE_AUDIO = False  # Set to False to disable audio output
 AUDIO_METRICS_INTERVAL = 1.0  # How often to update audio metrics (seconds)
 NO_BUFFER = False
 
@@ -357,15 +357,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stream Metadata Monitor - Monitors stream metadata and audio levels')
     parser.add_argument('url', nargs='?', default="https://rfcm.streamguys1.com/00hits-mp3",
                       help='URL of the stream to monitor (default: %(default)s)')
-    parser.add_argument('--no-audio', action='store_true',
-                      help='Disable audio output and level monitoring')
+    parser.add_argument('--audio', dest='audio', action='store_true',
+                      help='Enable audio output and level monitoring')
+    parser.set_defaults(audio=False)
     parser.add_argument('--no-buffer', action='store_true',
                       help='Reduce FFmpeg buffering for lower latency (may cause instability)')
     
     args = parser.parse_args()
     
     # Update global configuration based on arguments
-    ENABLE_AUDIO = not args.no_audio
+    ENABLE_AUDIO = args.audio
     NO_BUFFER = args.no_buffer
     
     class StreamMetadataWithBuffer(StreamMetadata):

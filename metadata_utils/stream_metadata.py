@@ -125,6 +125,29 @@ class StreamMetadata:
         # Capitalize first letter, rest lower, replace underscores with spaces
         return key.replace('_', ' ').capitalize() + ':'
 
+    def write_json_with_history(self, current_event):
+        # Read the current JSON (if any)
+        data = self.read_json() or {}
+        # Update top-level fields for the current event
+        for k, v in current_event.items():
+            if k != 'history':
+                data[k] = v
+        # Prepare the event for history (only fields we care about)
+        history_event = {
+            'timestamp': current_event['timestamp'],
+            'artist': current_event['artist'],
+            'title': current_event['title']
+        }
+        # Update history array
+        history = data.get('history', [])
+        # Only append if this event is not a duplicate of the last
+        if not history or (history[-1]['artist'] != history_event['artist'] or history[-1]['title'] != history_event['title']):
+            history.append(history_event)
+        # Keep only the last 10
+        history = history[-10:]
+        data['history'] = history
+        self.write_json(data)
+
     def format_metadata(self, metadata: Dict) -> None:
         if not ENABLE_METADATA_MONITOR:
             return
@@ -173,8 +196,8 @@ class StreamMetadata:
                 'loudness_range_lu': self.audio_metrics['loudness_range_lu']
             })
 
-        # Write to JSON
-        self.write_json(complete_metadata)
+        # Write to JSON and update history
+        self.write_json_with_history(complete_metadata)
         
         # Output order: timestamp, stream, stream ID, metadata fields, audio metrics, separator
         print(f"\n[{complete_metadata['timestamp']}]")
@@ -185,10 +208,14 @@ class StreamMetadata:
             print("\U0001F4E2 Now Playing (Ad):")
         else:
             print("\U0001F3B5 Now Playing:")
-        # Show all fields except special fields, in order
+        # Show Artist first, then Title
+        print(f"   Artist: {complete_metadata['artist']}")
+        print(f"   Title: {complete_metadata['title']}")
+        # Show all other fields except special fields, artist, title
         for k, v in complete_metadata.items():
             if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream', 'stream_id',
-                    'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu'):
+                    'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu',
+                    'artist', 'title'):
                 continue
             print(f"   {self.format_field_label(k)} {v}")
         # Show adswizzContext_json if present
@@ -205,6 +232,16 @@ class StreamMetadata:
             print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
             print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
             print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
+        # Display history, excluding the currently playing event
+        data = self.read_json() or {}
+        history = data.get('history', [])
+        filtered_history = [event for event in history if not (
+            event['artist'] == complete_metadata['artist'] and event['title'] == complete_metadata['title']
+        )]
+        if filtered_history:
+            print("\nHistory (last 10):")
+            for event in reversed(filtered_history):
+                print(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
         print("-" * 50)
         sys.stdout.flush()
 
@@ -470,23 +507,28 @@ class StreamMetadata:
     def display_ad_metadata(self, ad_metadata: dict):
         if not ENABLE_METADATA_MONITOR:
             return
-        # Write to JSON
-        self.write_json(ad_metadata)
+        # Write to JSON and update history
+        event = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'artist': ad_metadata.get('artist', ''),
+            'title': ad_metadata.get('title', '[Ad]')
+        }
+        self.write_json_with_history({**ad_metadata, **event})
         # Output order: timestamp, stream, stream ID, metadata fields, audio metrics, separator
-        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
-        json_data = self.read_json() or ad_metadata
-        # Get the first key for the stream label
-        keys = list(json_data.keys())
-        stream_label = self.format_field_label(keys[0]) if keys else "Stream:"
-        print(f"{stream_label} {self.stream_url}")
+        print(f"\n[{event['timestamp']}]")
+        print(f"Stream: {self.stream_url}")
         print(f"Stream ID: {self.stream_id}")
         print("\U0001F4E2 Now Playing (Ad):")
-        for k, v in json_data.items():
-            if k in ('adw_ad', 'adswizzContext_json'):
+        # Show Artist first, then Title for ads
+        print(f"   Artist: {event['artist']}")
+        print(f"   Title: {event['title']}")
+        # Show all other fields except special fields, artist, title
+        for k, v in ad_metadata.items():
+            if k in ('adw_ad', 'adswizzContext_json', 'artist', 'title'):
                 continue
             print(f"   {self.format_field_label(k)} {v}")
-        if 'adswizzContext_json' in json_data:
-            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{json_data['adswizzContext_json']}")
+        if 'adswizzContext_json' in ad_metadata:
+            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{ad_metadata['adswizzContext_json']}")
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
                 print("\U0001F4CA Audio Levels:")
@@ -498,6 +540,16 @@ class StreamMetadata:
                 print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
                 print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
                 print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
+        # Display history, excluding the currently playing event
+        data = self.read_json() or {}
+        history = data.get('history', [])
+        filtered_history = [event for event in history if not (
+            event['artist'] == event['artist'] and event['title'] == event['title']
+        )]
+        if filtered_history:
+            print("\nHistory (last 10):")
+            for event in reversed(filtered_history):
+                print(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
         print("-" * 50)
         sys.stdout.flush()
 

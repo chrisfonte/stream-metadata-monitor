@@ -18,7 +18,7 @@ A Python-based toolkit for monitoring and analyzing audio streams in real-time, 
 
 ### Basic Usage
 
-Monitor a stream (defaults to https://rfcm.streamguys1.com/00hits-mp3):
+Monitor a stream (defaults to https://example.com/your-stream.mp3):
 ```bash
 python3 stream_metadata.py
 ```
@@ -50,7 +50,7 @@ If no feature flags are specified, all features are enabled by default.
 ## Example Output
 ```
 [2025-05-09 16:42:36]
-Stream: https://rfcm.streamguys1.com/specs-icy
+Stream: https://example.com/your-stream.mp3
 Stream ID: NA4439
 🎵 Now Playing:
    Artist: Kenny G.

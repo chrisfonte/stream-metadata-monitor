@@ -234,9 +234,19 @@ class StreamMetadata:
                 )
                 # Wait briefly to see if FFmpeg errors out
                 time.sleep(1)
-                if self.ffmpeg_audio_process.poll() is not None and self.ffmpeg_audio_process.returncode != 0:
-                    logging.warning(f"FFmpeg failed to start with device {device}, return code: {self.ffmpeg_audio_process.returncode}, trying next device...")
-                    continue
+                if self.ffmpeg_audio_process.poll() is not None:
+                    # Read the output for error details
+                    error_output = self.ffmpeg_audio_process.stdout.read()
+                    if ("Failed to resolve hostname" in error_output or
+                        "Error opening input" in error_output or
+                        "404 Not Found" in error_output or
+                        "Input/output error" in error_output or
+                        "could not find codec parameters" in error_output):
+                        logging.error("Stream/network error: Could not open stream URL. Please check the stream address and your network connection.")
+                        return
+                    elif self.ffmpeg_audio_process.returncode != 0:
+                        logging.warning(f"FFmpeg failed to start with device {device}, return code: {self.ffmpeg_audio_process.returncode}, trying next device...")
+                        continue
                 if self.ffmpeg_audio_process.poll() is not None:
                     print(f"[DEBUG] FFmpeg process exited immediately with return code: {self.ffmpeg_audio_process.returncode}")
                 while not self.stop_flag.is_set() and self.ffmpeg_audio_process.poll() is None:

@@ -15,6 +15,7 @@ import tempfile
 from datetime import datetime
 from typing import Dict, Optional
 import logging
+import argparse
 
 # Configuration
 ENABLE_AUDIO = True  # Set to False to disable audio output
@@ -84,39 +85,26 @@ class StreamMetadata:
         current_artist = title_info.get('artist', '')
         current_title = title_info.get('title', '')
 
-        title_changed = (current_artist != self.last_artist or current_title != self.last_title)
-
-        if not title_changed and metadata == self.last_metadata:
-            logging.debug("Skipping duplicate metadata")
-            return
-
+        # Update last seen metadata
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
         self.last_title = current_title
 
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
         if metadata.get('title'):
-            print("🎵 Now Playing:")
+            if metadata.get('type') == 'ad':
+                print("📢 Now Playing (Ad):")
+            else:
+                print("🎵 Now Playing:")
             if current_artist:
                 print(f"   Artist: {current_artist}")
             if current_title:
                 print(f"   Title:  {current_title}")
 
-        if any(k in metadata for k in ('samplerate', 'bitrate', 'channels')):
-            print("🎚️ Audio Quality:")
-            if metadata.get('samplerate'):
-                print(f"   Sample Rate: {metadata['samplerate']}")
-            if metadata.get('bitrate'):
-                print(f"   Bitrate:     {metadata['bitrate']}")
-            if metadata.get('channels'):
-                print(f"   Channels:    {metadata['channels']}")
-
         with self.audio_metrics_lock:
             print("📊 Audio Levels:")
             print(f"   Integrated LUFS: {self.audio_metrics['integrated_lufs']:.1f} LUFS")
             print(f"   Short-term LUFS: {self.audio_metrics['short_term_lufs']:.1f} LUFS")
-            print(f"   True Peak:       {self.audio_metrics['true_peak_db']:.1f} dBFS")
-            print(f"   Loudness Range:  {self.audio_metrics['loudness_range_lu']:.1f} LU")
         print("-" * 50)
         sys.stdout.flush()
 
@@ -248,8 +236,8 @@ output.dummy(fallible=true, s)
             cmd = [
                 'ffmpeg',
                 '-hide_banner',
-                '-loglevel', 'info',  # Changed to info to reduce noise but keep metadata updates
-                '-headers', 'Icy-MetaData: 1\r\nIcy-MetaInt: 16000',  # Added MetaInt for better metadata handling
+                '-loglevel', 'debug',  # Keep debug level to see all output
+                '-headers', 'Icy-MetaData: 1\r\nIcy-MetaInt: 16000',
                 '-reconnect', '1',
                 '-reconnect_streamed', '1',
                 '-reconnect_delay_max', '5',
@@ -264,30 +252,44 @@ output.dummy(fallible=true, s)
                 text=True
             )
             logging.info("Metadata monitor running...")
+            
             while not self.stop_flag.is_set() and self.metadata_process.poll() is None:
                 line = self.metadata_process.stdout.readline().strip()
                 if not line:
                     continue
                 
-                # Only log debug output for metadata-related lines
-                if any(term in line.lower() for term in ['streamtitle', 'metadata']):
+                # Log all potentially relevant lines for debugging
+                if any(term in line.lower() for term in ['streamtitle', 'metadata', 'icy', 'title', 'artist', 'ad', 'commercial']):
                     logging.debug(f"FFmpeg output: {line}")
                 
-                # Handle metadata updates
-                if 'StreamTitle' in line:
+                # Handle metadata updates - expanded pattern matching
+                if any(pattern in line.lower() for pattern in ['streamtitle', 'icy-metadata', 'title=', 'artist=', 'ad=', 'commercial=']):
                     try:
-                        if 'Metadata update for StreamTitle:' in line:
-                            # Extract the title after "StreamTitle:"
-                            title = line.split('StreamTitle:')[1].strip()
-                        elif 'StreamTitle     :' in line:
-                            # Extract the title after "StreamTitle     :"
-                            title = line.split('StreamTitle     :')[1].strip()
+                        title = None
+                        # Try different patterns for metadata
+                        if 'streamtitle' in line.lower():
+                            if 'metadata update for streamtitle:' in line.lower():
+                                title = line.split('StreamTitle:', 1)[1].strip()
+                            elif 'streamtitle     :' in line.lower():
+                                title = line.split('StreamTitle     :', 1)[1].strip()
+                            elif 'streamtitle=' in line.lower():
+                                title = line.split('StreamTitle=', 1)[1].strip()
+                        elif 'title=' in line.lower():
+                            title = line.split('title=', 1)[1].strip()
+                        elif 'ad=' in line.lower():
+                            title = line.split('ad=', 1)[1].strip()
+                        elif 'commercial=' in line.lower():
+                            title = line.split('commercial=', 1)[1].strip()
                         
-                        if 'title' in locals() and title:  # Only if title was extracted
-                            title = title.strip(' -')  # Remove trailing hyphens and whitespace
-                            logging.info(f"Found metadata: {title}")  # Log the found metadata
-                            metadata = {"title": title}
-                            self.format_metadata(metadata)
+                        if title:
+                            # Clean up the title
+                            title = title.strip(' -').strip('"\'')  # Remove quotes and extra spaces
+                            if title and title.lower() not in ['none', 'null', '']:
+                                metadata = {"title": title}
+                                # Check if this is an ad
+                                if any(term in line.lower() for term in ['ad', 'commercial']):
+                                    metadata['type'] = 'ad'
+                                self.format_metadata(metadata)
                     except Exception as e:
                         logging.error(f"Metadata parse error: {e}")
                         logging.debug(f"Failed line: {line}")
@@ -322,7 +324,17 @@ output.dummy(fallible=true, s)
 
 
 if __name__ == "__main__":
-    url = sys.argv[1] if len(sys.argv) > 1 else "https://rfcm.streamguys1.com/00hits-mp3"
-    monitor = StreamMetadata(url)
+    parser = argparse.ArgumentParser(description='Stream Metadata Monitor - Monitors stream metadata and audio levels')
+    parser.add_argument('url', nargs='?', default="https://rfcm.streamguys1.com/00hits-mp3",
+                      help='URL of the stream to monitor (default: %(default)s)')
+    parser.add_argument('--no-audio', action='store_true',
+                      help='Disable audio output and level monitoring')
+    
+    args = parser.parse_args()
+    
+    # Update global configuration based on arguments
+    ENABLE_AUDIO = not args.no_audio
+    
+    monitor = StreamMetadata(args.url)
     monitor.run()
 

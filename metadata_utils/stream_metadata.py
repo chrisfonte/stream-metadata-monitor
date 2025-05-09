@@ -34,6 +34,7 @@ class StreamMetadata:
         self.last_metadata: Dict = {}
         self.last_title: str = ""
         self.last_artist: str = ""
+        self.last_type: str = ""
 
         self.audio_metrics = {
             "integrated_lufs": -70.0,
@@ -84,11 +85,21 @@ class StreamMetadata:
         title_info = self.parse_title(metadata.get('title', ''))
         current_artist = title_info.get('artist', '')
         current_title = title_info.get('title', '')
+        current_type = metadata.get('type', '')
+
+        # Only print if something changed
+        if (
+            current_artist == self.last_artist and
+            current_title == self.last_title and
+            current_type == getattr(self, 'last_type', None)
+        ):
+            return
 
         # Update last seen metadata
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
         self.last_title = current_title
+        self.last_type = current_type
 
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
         if metadata.get('title'):
@@ -258,16 +269,32 @@ output.dummy(fallible=true, s)
                 if not line:
                     continue
                 
-                # Log all potentially relevant lines for debugging
-                if any(term in line.lower() for term in ['streamtitle', 'metadata', 'icy', 'title', 'artist', 'ad', 'commercial']):
-                    logging.debug(f"FFmpeg output: {line}")
+                # Log all FFmpeg output for debugging
+                logging.debug(f"FFmpeg: {line}")
                 
                 # Handle metadata updates - expanded pattern matching
-                if any(pattern in line.lower() for pattern in ['streamtitle', 'icy-metadata', 'title=', 'artist=', 'ad=', 'commercial=']):
+                if any(pattern in line.lower() for pattern in ['streamtitle', 'icy-metadata', 'title=', 'artist=', 'ad=', 'commercial=', 'spot=', 'metadata']):
                     try:
                         title = None
-                        # Try different patterns for metadata
-                        if 'streamtitle' in line.lower():
+                        is_ad = False
+                        
+                        # Log the raw line for debugging
+                        logging.debug(f"Processing metadata line: {line}")
+                        
+                        # Check for ad indicators first
+                        if any(term in line.lower() for term in ['ad=', 'commercial=', 'spot=', 'advertisement']):
+                            is_ad = True
+                            logging.debug(f"Detected ad metadata: {line}")
+                            if 'ad=' in line.lower():
+                                title = line.split('ad=', 1)[1].strip()
+                            elif 'commercial=' in line.lower():
+                                title = line.split('commercial=', 1)[1].strip()
+                            elif 'spot=' in line.lower():
+                                title = line.split('spot=', 1)[1].strip()
+                            elif 'advertisement' in line.lower():
+                                title = line.split('advertisement', 1)[1].strip()
+                        # Then check for regular metadata
+                        elif 'streamtitle' in line.lower():
                             if 'metadata update for streamtitle:' in line.lower():
                                 title = line.split('StreamTitle:', 1)[1].strip()
                             elif 'streamtitle     :' in line.lower():
@@ -276,20 +303,18 @@ output.dummy(fallible=true, s)
                                 title = line.split('StreamTitle=', 1)[1].strip()
                         elif 'title=' in line.lower():
                             title = line.split('title=', 1)[1].strip()
-                        elif 'ad=' in line.lower():
-                            title = line.split('ad=', 1)[1].strip()
-                        elif 'commercial=' in line.lower():
-                            title = line.split('commercial=', 1)[1].strip()
                         
                         if title:
                             # Clean up the title
                             title = title.strip(' -').strip('"\'')  # Remove quotes and extra spaces
                             if title and title.lower() not in ['none', 'null', '']:
+                                logging.debug(f"Extracted title: {title} (is_ad: {is_ad})")
                                 metadata = {"title": title}
-                                # Check if this is an ad
-                                if any(term in line.lower() for term in ['ad', 'commercial']):
+                                if is_ad:
                                     metadata['type'] = 'ad'
                                 self.format_metadata(metadata)
+                            else:
+                                logging.debug(f"Ignoring empty title: {title}")
                     except Exception as e:
                         logging.error(f"Metadata parse error: {e}")
                         logging.debug(f"Failed line: {line}")

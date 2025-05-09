@@ -20,6 +20,7 @@ import argparse
 # Configuration
 ENABLE_AUDIO = True  # Set to False to disable audio output
 AUDIO_METRICS_INTERVAL = 1.0  # How often to update audio metrics (seconds)
+NO_BUFFER = False
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
@@ -217,6 +218,8 @@ output.dummy(fallible=true, s)
                 '-f', 'null',
                 '-'
             ]
+            if NO_BUFFER:
+                cmd[1:1] = ['-fflags', 'nobuffer']
             self.ffmpeg_audio_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -256,6 +259,8 @@ output.dummy(fallible=true, s)
                 '-f', 'null',
                 '-'
             ]
+            if NO_BUFFER:
+                cmd[1:1] = ['-fflags', 'nobuffer']
             self.metadata_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -354,12 +359,146 @@ if __name__ == "__main__":
                       help='URL of the stream to monitor (default: %(default)s)')
     parser.add_argument('--no-audio', action='store_true',
                       help='Disable audio output and level monitoring')
+    parser.add_argument('--no-buffer', action='store_true',
+                      help='Reduce FFmpeg buffering for lower latency (may cause instability)')
     
     args = parser.parse_args()
     
     # Update global configuration based on arguments
     ENABLE_AUDIO = not args.no_audio
+    NO_BUFFER = args.no_buffer
     
-    monitor = StreamMetadata(args.url)
+    class StreamMetadataWithBuffer(StreamMetadata):
+        def run_ffmpeg_audio_monitor(self):
+            if not ENABLE_AUDIO:
+                return
+            try:
+                cmd = [
+                    'ffmpeg',
+                    '-hide_banner',
+                    '-loglevel', 'info',
+                    '-headers', 'Icy-MetaData: 1',
+                    '-reconnect', '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '2',
+                    '-i', self.stream_url,
+                    '-filter_complex', 'asplit=2[out][analyze];[analyze]ebur128=peak=true:meter=18[levels]',
+                    '-map', '[out]',
+                    '-f', 'alsa',
+                    'default',
+                    '-map', '[levels]',
+                    '-f', 'null',
+                    '-'
+                ]
+                if NO_BUFFER:
+                    cmd[1:1] = ['-fflags', 'nobuffer']
+                self.ffmpeg_audio_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                logging.info("FFmpeg audio analysis running...")
+                while not self.stop_flag.is_set() and self.ffmpeg_audio_process.poll() is None:
+                    line = self.ffmpeg_audio_process.stdout.readline().strip()
+                    if not line:
+                        continue
+                    
+                    # Log all FFmpeg output for debugging
+                    logging.debug(f"FFmpeg audio: {line}")
+                    
+                    # Handle audio metrics
+                    if any(x in line for x in ['TARGET:', 'LUFS', 'LRA:', 'TPK:']):
+                        metrics = self.parse_ebur128_output(line)
+                        if metrics:
+                            with self.audio_metrics_lock:
+                                self.audio_metrics.update(metrics)
+            except Exception as e:
+                logging.error(f"FFmpeg monitor error: {e}")
+                self.stop_flag.set()
+
+        def run_metadata_monitor(self):
+            try:
+                cmd = [
+                    'ffmpeg',
+                    '-hide_banner',
+                    '-loglevel', 'debug',  # Keep debug level to see all output
+                    '-headers', 'Icy-MetaData: 1\r\nIcy-MetaInt: 16000',
+                    '-reconnect', '1',
+                    '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '5',
+                    '-i', self.stream_url,
+                    '-f', 'null',
+                    '-'
+                ]
+                if NO_BUFFER:
+                    cmd[1:1] = ['-fflags', 'nobuffer']
+                self.metadata_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                logging.info("Metadata monitor running...")
+                
+                while not self.stop_flag.is_set() and self.metadata_process.poll() is None:
+                    line = self.metadata_process.stdout.readline().strip()
+                    if not line:
+                        continue
+                    
+                    # Log all FFmpeg output for debugging
+                    logging.debug(f"FFmpeg: {line}")
+                    
+                    # Handle metadata updates - expanded pattern matching
+                    if any(pattern in line.lower() for pattern in ['streamtitle', 'icy-metadata', 'title=', 'artist=', 'ad=', 'commercial=', 'spot=', 'metadata']):
+                        try:
+                            title = None
+                            is_ad = False
+                            
+                            # Log the raw line for debugging
+                            logging.debug(f"Processing metadata line: {line}")
+                            
+                            # Check for ad indicators first
+                            if any(term in line.lower() for term in ['ad=', 'commercial=', 'spot=', 'advertisement']):
+                                is_ad = True
+                                logging.debug(f"Detected ad metadata: {line}")
+                                if 'ad=' in line.lower():
+                                    title = line.split('ad=', 1)[1].strip()
+                                elif 'commercial=' in line.lower():
+                                    title = line.split('commercial=', 1)[1].strip()
+                                elif 'spot=' in line.lower():
+                                    title = line.split('spot=', 1)[1].strip()
+                                elif 'advertisement' in line.lower():
+                                    title = line.split('advertisement', 1)[1].strip()
+                            # Then check for regular metadata
+                            elif 'streamtitle' in line.lower():
+                                if 'metadata update for streamtitle:' in line.lower():
+                                    title = line.split('StreamTitle:', 1)[1].strip()
+                                elif 'streamtitle     :' in line.lower():
+                                    title = line.split('StreamTitle     :', 1)[1].strip()
+                                elif 'streamtitle=' in line.lower():
+                                    title = line.split('StreamTitle=', 1)[1].strip()
+                            elif 'title=' in line.lower():
+                                title = line.split('title=', 1)[1].strip()
+                            
+                            if title:
+                                # Clean up the title
+                                title = title.strip(' -').strip('"\'')  # Remove quotes and extra spaces
+                                if title and title.lower() not in ['none', 'null', '']:
+                                    logging.debug(f"Extracted title: {title} (is_ad: {is_ad})")
+                                    metadata = {"title": title}
+                                    if is_ad:
+                                        metadata['type'] = 'ad'
+                                    self.format_metadata(metadata)
+                                else:
+                                    logging.debug(f"Ignoring empty title: {title}")
+                        except Exception as e:
+                            logging.error(f"Metadata parse error: {e}")
+                            logging.debug(f"Failed line: {line}")
+            except Exception as e:
+                logging.error(f"Metadata monitor error: {e}")
+                self.stop_flag.set()
+    
+    monitor = StreamMetadataWithBuffer(args.url)
     monitor.run()
 

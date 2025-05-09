@@ -17,6 +17,9 @@ from typing import Dict, Optional
 import logging
 import argparse
 import base64
+import random
+import string
+import atexit
 
 # Configuration
 AUDIO_METRICS_INTERVAL = 1.0  # How often to update audio metrics (seconds)
@@ -28,8 +31,10 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(m
 
 
 class StreamMetadata:
-    def __init__(self, stream_url="https://rfcm.streamguys1.com/00hits-mp3"):
+    def __init__(self, stream_url="https://rfcm.streamguys1.com/00hits-mp3", stream_id=None):
         self.stream_url = stream_url
+        self.stream_id = stream_id or self.generate_stream_id()
+        self.json_path = f"{self.stream_id}.json"
         self.ffmpeg_audio_process: Optional[subprocess.Popen] = None
         self.metadata_process: Optional[subprocess.Popen] = None
         self.stop_flag = threading.Event()
@@ -38,6 +43,7 @@ class StreamMetadata:
         self.last_title: str = ""
         self.last_artist: str = ""
         self.last_type: str = ""
+        self.type = "unknown"  # Will be set by FFmpeg output
 
         self.audio_metrics = {
             "integrated_lufs": None,
@@ -52,6 +58,36 @@ class StreamMetadata:
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
 
+        atexit.register(self.cleanup_json)
+
+    def generate_stream_id(self):
+        # Generate NA followed by 4 random digits
+        return 'NA' + ''.join(random.choices(string.digits, k=4))
+
+    def cleanup_json(self):
+        try:
+            if os.path.exists(self.json_path):
+                os.remove(self.json_path)
+                logging.info(f"Cleaned up JSON file: {self.json_path}")
+        except Exception as e:
+            logging.error(f"Error cleaning up JSON file: {e}")
+
+    def write_json(self, data):
+        try:
+            with open(self.json_path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logging.error(f"Error writing JSON: {e}")
+
+    def read_json(self):
+        try:
+            if os.path.exists(self.json_path):
+                with open(self.json_path, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
+
     def handle_signal(self, signum, frame):
         logging.info("Shutting down...")
         self.stop_flag.set()
@@ -59,6 +95,7 @@ class StreamMetadata:
             if thread.is_alive():
                 thread.join(timeout=2.0)
         self.terminate_processes()
+        self.cleanup_json()  # Ensure JSON is cleaned up
         logging.info("Shutdown complete.")
 
     def terminate_processes(self):
@@ -75,21 +112,28 @@ class StreamMetadata:
         if not title:
             return result
         cleaned_title = title.strip().rstrip('-').strip()
-        parts = [part.strip() for part in cleaned_title.split(' - ') if part.strip()]
-        if len(parts) >= 2:
-            result['artist'] = parts[0]
-            result['title'] = ' - '.join(parts[1:])
-        elif parts:
-            result['title'] = parts[0]
+        # Split on the first occurrence of ' - '
+        if ' - ' in cleaned_title:
+            artist, song_title = cleaned_title.split(' - ', 1)
+            result['artist'] = artist.strip()
+            result['title'] = song_title.strip()
+        else:
+            result['title'] = cleaned_title
         return result
+
+    def format_field_label(self, key):
+        # Capitalize first letter, rest lower, replace underscores with spaces
+        return key.replace('_', ' ').capitalize() + ':'
 
     def format_metadata(self, metadata: Dict) -> None:
         if not ENABLE_METADATA_MONITOR:
             return
-        # Only print if something changed
+        # Always parse and overwrite artist/title
         title_info = self.parse_title(metadata.get('title', ''))
-        current_artist = title_info.get('artist', '')
-        current_title = title_info.get('title', '')
+        metadata['artist'] = title_info.get('artist', '')
+        metadata['title'] = title_info.get('title', '')
+        current_artist = metadata['artist']
+        current_title = metadata['title']
         current_type = metadata.get('type', '')
         
         # Create a unique key for this metadata
@@ -105,31 +149,62 @@ class StreamMetadata:
         self.last_artist = current_artist
         self.last_title = current_title
         self.last_type = current_type
+
+        # Use detected type, or show (detecting...)
+        display_type = self.type if self.type != 'unknown' else '(detecting...)'
+
+        # Create complete metadata dictionary with all required fields
+        complete_metadata = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'stream': self.stream_url,
+            'stream_id': self.stream_id,
+            'type': display_type,  # Use the stream type detected from FFmpeg or (detecting...)
+            'title': current_title,  # Only the parsed title
+            'artist': current_artist  # Only the parsed artist
+        }
+        # Add any additional metadata fields
+        complete_metadata.update(metadata)
+        # Add audio metrics if available
+        with self.audio_metrics_lock:
+            complete_metadata.update({
+                'integrated_lufs': self.audio_metrics['integrated_lufs'],
+                'short_term_lufs': self.audio_metrics['short_term_lufs'],
+                'true_peak_db': self.audio_metrics['true_peak_db'],
+                'loudness_range_lu': self.audio_metrics['loudness_range_lu']
+            })
+
+        # Write to JSON
+        self.write_json(complete_metadata)
         
-        # Output order: timestamp, stream URL, metadata, audio metrics, separator
-        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
-        print(self.stream_url)
-        if metadata.get('title'):
-            if metadata.get('type') == 'ad':
-                print("📢 Now Playing (Ad):")
-            else:
-                print("🎵 Now Playing:")
-            if current_artist:
-                print(f"   Artist: {current_artist}")
-            if current_title:
-                print(f"   Title:  {current_title}")
+        # Output order: timestamp, stream, stream ID, metadata fields, audio metrics, separator
+        print(f"\n[{complete_metadata['timestamp']}]")
+        print(f"Stream: {self.stream_url}")
+        print(f"Stream ID: {self.stream_id}")
+        # Now Playing block
+        if complete_metadata.get('type') == 'ad':
+            print("\U0001F4E2 Now Playing (Ad):")
+        else:
+            print("\U0001F3B5 Now Playing:")
+        # Show all fields except special fields, in order
+        for k, v in complete_metadata.items():
+            if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream', 'stream_id',
+                    'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu'):
+                continue
+            print(f"   {self.format_field_label(k)} {v}")
+        # Show adswizzContext_json if present
+        if 'adswizzContext_json' in complete_metadata:
+            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{complete_metadata['adswizzContext_json']}")
         # Only display audio metrics if enabled
         if ENABLE_AUDIO_METRICS:
-            with self.audio_metrics_lock:
-                print("📊 Audio Levels:")
-                lufs = self.audio_metrics['integrated_lufs']
-                st_lufs = self.audio_metrics['short_term_lufs']
-                tp_db = self.audio_metrics['true_peak_db']
-                lra = self.audio_metrics['loudness_range_lu']
-                print(f"   Integrated LUFS: {lufs:.1f} LUFS" if lufs is not None else "   Integrated LUFS: N/A")
-                print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
-                print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
-                print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
+            print("\U0001F4CA Audio Levels:")
+            lufs = complete_metadata['integrated_lufs']
+            st_lufs = complete_metadata['short_term_lufs']
+            tp_db = complete_metadata['true_peak_db']
+            lra = complete_metadata['loudness_range_lu']
+            print(f"   Integrated LUFS: {lufs:.1f} LUFS" if lufs is not None else "   Integrated LUFS: N/A")
+            print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
+            print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
+            print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
         print("-" * 50)
         sys.stdout.flush()
 
@@ -159,6 +234,27 @@ class StreamMetadata:
         if not metrics:
             print(f"[WARNING] No metrics parsed from line: {line}")
         return metrics
+
+    def extract_stream_type_from_ffmpeg(self, line: str):
+        # Look for lines like: Stream #0:0: Audio: aac (LC), ...
+        m = re.search(r'Audio: (\w+)', line)
+        if m:
+            codec = m.group(1).lower()
+            if codec in ('aac', 'mp3'):
+                if self.type != codec:
+                    self.type = codec
+                    # Update JSON with new type if available
+                    last_json = self.read_json()
+                    if last_json:
+                        last_json['type'] = self.type
+                        self.write_json(last_json)
+            else:
+                if self.type != codec:
+                    self.type = codec
+                    last_json = self.read_json()
+                    if last_json:
+                        last_json['type'] = self.type
+                        self.write_json(last_json)
 
     def run_ffmpeg_audio_monitor(self):
         # Only run if audio playback or audio metrics are enabled
@@ -251,19 +347,11 @@ class StreamMetadata:
                 if self.ffmpeg_audio_process.poll() is not None:
                     print(f"[DEBUG] FFmpeg process exited immediately with return code: {self.ffmpeg_audio_process.returncode}")
                 while not self.stop_flag.is_set() and self.ffmpeg_audio_process.poll() is None:
-                    if ENABLE_AUDIO_METRICS:
-                        pass  # Removed debug print for clean output
                     line = self.ffmpeg_audio_process.stdout.readline().strip()
                     if line:
-                        print(f"[FFMPEG OUT] {line}")
-                    if not line:
-                        continue
-                    if DEBUG_MODE:
-                        logging.debug(f"FFmpeg audio output: {line}")
-                    # Handle audio metrics only if enabled
+                        # Detect stream type from FFmpeg output
+                        self.extract_stream_type_from_ffmpeg(line)
                     if ENABLE_AUDIO_METRICS and any(x in line for x in ['TARGET:', 'LUFS', 'LRA:', 'TPK:']):
-                        if DEBUG_MODE:
-                            logging.debug(f"Parsing audio metrics from: {line}")
                         metrics = self.parse_ebur128_output(line)
                         if metrics:
                             with self.audio_metrics_lock:
@@ -382,19 +470,26 @@ class StreamMetadata:
     def display_ad_metadata(self, ad_metadata: dict):
         if not ENABLE_METADATA_MONITOR:
             return
-        # Output order: timestamp, stream URL, metadata, audio metrics, separator
+        # Write to JSON
+        self.write_json(ad_metadata)
+        # Output order: timestamp, stream, stream ID, metadata fields, audio metrics, separator
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
-        print(self.stream_url)
-        print("📢 Now Playing (Ad):")
-        for k, v in ad_metadata.items():
-            if k == 'adswizzContext_json':
-                print(f"  🗂️ adswizzContext (decoded):\n{v}")
-            elif k != 'adw_ad':
-                print(f"  {k}: {v}")
-        # Only display audio metrics if enabled
+        json_data = self.read_json() or ad_metadata
+        # Get the first key for the stream label
+        keys = list(json_data.keys())
+        stream_label = self.format_field_label(keys[0]) if keys else "Stream:"
+        print(f"{stream_label} {self.stream_url}")
+        print(f"Stream ID: {self.stream_id}")
+        print("\U0001F4E2 Now Playing (Ad):")
+        for k, v in json_data.items():
+            if k in ('adw_ad', 'adswizzContext_json'):
+                continue
+            print(f"   {self.format_field_label(k)} {v}")
+        if 'adswizzContext_json' in json_data:
+            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{json_data['adswizzContext_json']}")
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
-                print("📊 Audio Levels:")
+                print("\U0001F4CA Audio Levels:")
                 lufs = self.audio_metrics['integrated_lufs']
                 st_lufs = self.audio_metrics['short_term_lufs']
                 tp_db = self.audio_metrics['true_peak_db']
@@ -413,6 +508,7 @@ class StreamMetadata:
         audio_metrics_status = 'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'
         # Output order and labels as requested, with icons
         logging.info(f"🌐 Stream: {self.stream_url}")
+        logging.info(f"🆔 Stream ID: {self.stream_id}")
         logging.info(f"📝 Metadata Monitor: {metadata_status}")
         logging.info(f"📊 Audio Metrics: {audio_metrics_status}")
         logging.info(f"⏩ No Buffer: {buffering_status}")
@@ -443,6 +539,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stream Metadata Monitor - Modular features')
     parser.add_argument('url', nargs='?', default="https://rfcm.streamguys1.com/00hits-mp3",
                       help='URL of the stream to monitor (default: %(default)s)')
+    parser.add_argument('--stream_id', type=str, default=None,
+                      help='Optional stream ID (default: auto-generated)')
     parser.add_argument('--audio_monitor', action='store_true',
                       help='Enable audio playback (no effect on metrics or metadata)')
     parser.add_argument('--metadata_monitor', action='store_true',
@@ -469,6 +567,6 @@ if __name__ == "__main__":
     NO_BUFFER = args.no_buffer
     DEBUG_MODE = args.debug
 
-    monitor = StreamMetadata(args.url)
+    monitor = StreamMetadata(args.url, stream_id=args.stream_id)
     monitor.run()
 

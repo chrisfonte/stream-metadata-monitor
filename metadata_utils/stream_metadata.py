@@ -83,32 +83,24 @@ class StreamMetadata:
         return result
 
     def format_metadata(self, metadata: Dict) -> None:
-        logging.debug(f"Raw metadata: {json.dumps(metadata)}")
+        if not ENABLE_METADATA:
+            return
+        # Only print if something changed
         title_info = self.parse_title(metadata.get('title', ''))
         current_artist = title_info.get('artist', '')
         current_title = title_info.get('title', '')
         current_type = metadata.get('type', '')
-
-        # Only print if something changed, or if first valid audio levels
         if (
             current_artist == self.last_artist and
             current_title == self.last_title and
             current_type == getattr(self, 'last_type', None)
-            and getattr(self, 'audio_levels_displayed', False)
         ):
             return
-
-        # Only require valid audio metrics to display
-        with self.audio_metrics_lock:
-            if not self.audio_levels_displayed:
-                return
-
         # Update last seen metadata
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
         self.last_title = current_title
         self.last_type = current_type
-
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
         print(self.stream_url)
         if metadata.get('title'):
@@ -120,12 +112,12 @@ class StreamMetadata:
                 print(f"   Artist: {current_artist}")
             if current_title:
                 print(f"   Title:  {current_title}")
-
-        # Always display audio metrics
-        with self.audio_metrics_lock:
-            print("📊 Audio Levels:")
-            print(f"   Integrated LUFS: {self.audio_metrics['integrated_lufs']:.1f} LUFS")
-            print(f"   Short-term LUFS: {self.audio_metrics['short_term_lufs']:.1f} LUFS")
+        # Only display audio metrics if enabled
+        if ENABLE_AUDIO_METRICS:
+            with self.audio_metrics_lock:
+                print("📊 Audio Levels:")
+                print(f"   Integrated LUFS: {self.audio_metrics['integrated_lufs']:.1f} LUFS")
+                print(f"   Short-term LUFS: {self.audio_metrics['short_term_lufs']:.1f} LUFS")
         print("-" * 50)
         sys.stdout.flush()
 
@@ -207,9 +199,12 @@ output.dummy(fallible=true, s)
             self.stop_flag.set()
 
     def run_ffmpeg_audio_monitor(self):
+        # Only run if audio playback or audio metrics are enabled
+        if not (ENABLE_AUDIO_MONITOR or ENABLE_AUDIO_METRICS):
+            return
         try:
             # Use different filter graphs depending on audio playback
-            if ENABLE_AUDIO:
+            if ENABLE_AUDIO_MONITOR:
                 filter_complex = 'asplit=2[out][analyze];[analyze]ebur128=peak=true:meter=18[levels]'
             else:
                 filter_complex = 'ebur128=peak=true:meter=18[levels]'
@@ -224,17 +219,18 @@ output.dummy(fallible=true, s)
                 '-i', self.stream_url,
                 '-filter_complex', filter_complex,
             ]
-            if ENABLE_AUDIO:
+            if ENABLE_AUDIO_MONITOR:
                 cmd += [
                     '-map', '[out]',
                     '-f', 'alsa',
                     'default',
                 ]
-            cmd += [
-                '-map', '[levels]',
-                '-f', 'null',
-                '-'
-            ]
+            if ENABLE_AUDIO_METRICS:
+                cmd += [
+                    '-map', '[levels]',
+                    '-f', 'null',
+                    '-'
+                ]
             if NO_BUFFER:
                 cmd[1:1] = ['-fflags', 'nobuffer']
             self.ffmpeg_audio_process = subprocess.Popen(
@@ -250,13 +246,13 @@ output.dummy(fallible=true, s)
                     continue
                 logging.debug(f"FFmpeg audio output: {line}")
                 # Handle audio metrics
-                if any(x in line for x in ['TARGET:', 'LUFS', 'LRA:', 'TPK:']):
+                if ENABLE_AUDIO_METRICS and any(x in line for x in ['TARGET:', 'LUFS', 'LRA:', 'TPK:']):
                     logging.debug(f"Parsing audio metrics from: {line}")
                     metrics = self.parse_ebur128_output(line)
                     if metrics:
                         with self.audio_metrics_lock:
                             self.audio_metrics.update(metrics)
-                        # Check if this is the first valid audio metrics (not default)
+                        # Set flag for first valid audio metrics (for display, but not for metadata logic)
                         if not self.audio_levels_displayed and any([
                             self.audio_metrics['integrated_lufs'] is not None,
                             self.audio_metrics['short_term_lufs'] is not None,
@@ -264,8 +260,6 @@ output.dummy(fallible=true, s)
                             self.audio_metrics['loudness_range_lu'] is not None
                         ]):
                             self.audio_levels_displayed = True
-                            # Print with last metadata
-                            self.format_metadata(self.last_metadata if self.last_metadata else {"title": ""})
         except Exception as e:
             logging.error(f"FFmpeg monitor error: {e}")
             self.stop_flag.set()
@@ -376,6 +370,8 @@ output.dummy(fallible=true, s)
             self.stop_flag.set()
 
     def display_ad_metadata(self, ad_metadata: dict):
+        if not ENABLE_METADATA:
+            return
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
         print(self.stream_url)
         print("📢 Now Playing (Ad):")
@@ -384,6 +380,12 @@ output.dummy(fallible=true, s)
                 print(f"  adswizzContext (decoded):\n{v}")
             elif k != 'adw_ad':
                 print(f"  {k}: {v}")
+        # Only display audio metrics if enabled
+        if ENABLE_AUDIO_METRICS:
+            with self.audio_metrics_lock:
+                print("📊 Audio Levels:")
+                print(f"   Integrated LUFS: {self.audio_metrics['integrated_lufs']:.1f} LUFS")
+                print(f"   Short-term LUFS: {self.audio_metrics['short_term_lufs']:.1f} LUFS")
         print("-" * 50)
         sys.stdout.flush()
 
@@ -415,26 +417,33 @@ output.dummy(fallible=true, s)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Stream Metadata Monitor - Monitors stream metadata and audio levels')
+    parser = argparse.ArgumentParser(description='Stream Metadata Monitor - Modular features')
     parser.add_argument('url', nargs='?', default="https://rfcm.streamguys1.com/00hits-mp3",
                       help='URL of the stream to monitor (default: %(default)s)')
-    parser.add_argument('--audio', dest='audio', action='store_true',
-                      help='Enable audio output and level monitoring')
-    parser.set_defaults(audio=False)
+    parser.add_argument('--audio_monitor', action='store_true',
+                      help='Enable audio playback (no effect on metrics or metadata)')
+    parser.add_argument('--metadata', action='store_true',
+                      help='Enable metadata display (song/ad info, adswizzContext, etc.)')
+    parser.add_argument('--audio_metrics', action='store_true',
+                      help='Enable audio metrics display (LUFS, etc.)')
     parser.add_argument('--no-buffer', action='store_true',
                       help='Reduce FFmpeg buffering for lower latency (may cause instability)')
-    
     args = parser.parse_args()
-    
-    # Update global configuration based on arguments
-    ENABLE_AUDIO = args.audio
+
+    # Feature flags
+    ENABLE_AUDIO_MONITOR = args.audio_monitor
+    ENABLE_METADATA = args.metadata
+    ENABLE_AUDIO_METRICS = args.audio_metrics
     NO_BUFFER = args.no_buffer
-    
-    class StreamMetadataWithBuffer(StreamMetadata):
+
+    class StreamMetadataModular(StreamMetadata):
         def run_ffmpeg_audio_monitor(self):
+            # Only run if audio playback or audio metrics are enabled
+            if not (ENABLE_AUDIO_MONITOR or ENABLE_AUDIO_METRICS):
+                return
             try:
                 # Use different filter graphs depending on audio playback
-                if ENABLE_AUDIO:
+                if ENABLE_AUDIO_MONITOR:
                     filter_complex = 'asplit=2[out][analyze];[analyze]ebur128=peak=true:meter=18[levels]'
                 else:
                     filter_complex = 'ebur128=peak=true:meter=18[levels]'
@@ -449,17 +458,18 @@ if __name__ == "__main__":
                     '-i', self.stream_url,
                     '-filter_complex', filter_complex,
                 ]
-                if ENABLE_AUDIO:
+                if ENABLE_AUDIO_MONITOR:
                     cmd += [
                         '-map', '[out]',
                         '-f', 'alsa',
                         'default',
                     ]
-                cmd += [
-                    '-map', '[levels]',
-                    '-f', 'null',
-                    '-'
-                ]
+                if ENABLE_AUDIO_METRICS:
+                    cmd += [
+                        '-map', '[levels]',
+                        '-f', 'null',
+                        '-'
+                    ]
                 if NO_BUFFER:
                     cmd[1:1] = ['-fflags', 'nobuffer']
                 self.ffmpeg_audio_process = subprocess.Popen(
@@ -475,13 +485,13 @@ if __name__ == "__main__":
                         continue
                     logging.debug(f"FFmpeg audio output: {line}")
                     # Handle audio metrics
-                    if any(x in line for x in ['TARGET:', 'LUFS', 'LRA:', 'TPK:']):
+                    if ENABLE_AUDIO_METRICS and any(x in line for x in ['TARGET:', 'LUFS', 'LRA:', 'TPK:']):
                         logging.debug(f"Parsing audio metrics from: {line}")
                         metrics = self.parse_ebur128_output(line)
                         if metrics:
                             with self.audio_metrics_lock:
                                 self.audio_metrics.update(metrics)
-                            # Check if this is the first valid audio metrics (not default)
+                            # Set flag for first valid audio metrics (for display, but not for metadata logic)
                             if not self.audio_levels_displayed and any([
                                 self.audio_metrics['integrated_lufs'] is not None,
                                 self.audio_metrics['short_term_lufs'] is not None,
@@ -489,117 +499,91 @@ if __name__ == "__main__":
                                 self.audio_metrics['loudness_range_lu'] is not None
                             ]):
                                 self.audio_levels_displayed = True
-                                # Print with last metadata
-                                self.format_metadata(self.last_metadata if self.last_metadata else {"title": ""})
             except Exception as e:
                 logging.error(f"FFmpeg monitor error: {e}")
                 self.stop_flag.set()
 
         def run_metadata_monitor(self):
-            try:
-                cmd = [
-                    'ffmpeg',
-                    '-hide_banner',
-                    '-loglevel', 'debug',  # Keep debug level to see all output
-                    '-headers', 'Icy-MetaData: 1\r\nIcy-MetaInt: 16000',
-                    '-reconnect', '1',
-                    '-reconnect_streamed', '1',
-                    '-reconnect_delay_max', '5',
-                    '-i', self.stream_url,
-                    '-f', 'null',
-                    '-'
-                ]
-                if NO_BUFFER:
-                    cmd[1:1] = ['-fflags', 'nobuffer']
-                self.metadata_process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True
-                )
-                logging.info("Metadata monitor running...")
+            if not ENABLE_METADATA:
+                return
+            super().run_metadata_monitor()
 
-                ad_metadata = {}
-                in_ad = False
-                ad_fields = ['adw_ad', 'adId', 'durationMilliseconds', 'insertionType', 'adswizzContext']
+        def format_metadata(self, metadata: Dict) -> None:
+            if not ENABLE_METADATA:
+                return
+            # Only print if something changed
+            title_info = self.parse_title(metadata.get('title', ''))
+            current_artist = title_info.get('artist', '')
+            current_title = title_info.get('title', '')
+            current_type = metadata.get('type', '')
+            if (
+                current_artist == self.last_artist and
+                current_title == self.last_title and
+                current_type == getattr(self, 'last_type', None)
+            ):
+                return
+            # Update last seen metadata
+            self.last_metadata = metadata.copy()
+            self.last_artist = current_artist
+            self.last_title = current_title
+            self.last_type = current_type
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+            print(self.stream_url)
+            if metadata.get('title'):
+                if metadata.get('type') == 'ad':
+                    print("📢 Now Playing (Ad):")
+                else:
+                    print("🎵 Now Playing:")
+                if current_artist:
+                    print(f"   Artist: {current_artist}")
+                if current_title:
+                    print(f"   Title:  {current_title}")
+            # Only display audio metrics if enabled
+            if ENABLE_AUDIO_METRICS:
+                with self.audio_metrics_lock:
+                    print("📊 Audio Levels:")
+                    print(f"   Integrated LUFS: {self.audio_metrics['integrated_lufs']:.1f} LUFS")
+                    print(f"   Short-term LUFS: {self.audio_metrics['short_term_lufs']:.1f} LUFS")
+            print("-" * 50)
+            sys.stdout.flush()
 
-                while not self.stop_flag.is_set() and self.metadata_process.poll() is None:
-                    line = self.metadata_process.stdout.readline().strip()
-                    if not line:
-                        continue
-                    # print(f"[FFMPEG META] {line}")
-                    logging.debug(f"FFmpeg: {line}")
+        def display_ad_metadata(self, ad_metadata: dict):
+            if not ENABLE_METADATA:
+                return
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
+            print(self.stream_url)
+            print("📢 Now Playing (Ad):")
+            for k, v in ad_metadata.items():
+                if k == 'adswizzContext_json':
+                    print(f"  adswizzContext (decoded):\n{v}")
+                elif k != 'adw_ad':
+                    print(f"  {k}: {v}")
+            # Only display audio metrics if enabled
+            if ENABLE_AUDIO_METRICS:
+                with self.audio_metrics_lock:
+                    print("📊 Audio Levels:")
+                    print(f"   Integrated LUFS: {self.audio_metrics['integrated_lufs']:.1f} LUFS")
+                    print(f"   Short-term LUFS: {self.audio_metrics['short_term_lufs']:.1f} LUFS")
+            print("-" * 50)
+            sys.stdout.flush()
 
-                    # Batch ad metadata
-                    if 'metadata update for adw_ad:' in line.lower():
-                        value = line.split(':', 2)[-1].strip().lower()
-                        if value == 'true':
-                            in_ad = True
-                            ad_metadata['adw_ad'] = True
-                            # print("[FFMPEG META DETECTED] adw_ad: true (ad start)")
-                            continue
-                        else:
-                            # adw_ad: false, treat as end of ad
-                            if in_ad and ad_metadata:
-                                self.display_ad_metadata(ad_metadata)
-                            ad_metadata = {}
-                            in_ad = False
-                            continue
-                    if in_ad:
-                        for field in ad_fields:
-                            if f'metadata update for {field.lower()}:' in line.lower():
-                                value = line.split(':', 2)[-1].strip()
-                                ad_metadata[field] = value
-                                # print(f"[FFMPEG META DETECTED] {field}: {value}")
-                                # Special handling for adswizzContext
-                                if field == 'adswizzContext':
-                                    try:
-                                        decoded = base64.b64decode(value).decode('utf-8')
-                                        json_obj = json.loads(decoded)
-                                        pretty = json.dumps(json_obj, indent=2)
-                                        ad_metadata['adswizzContext_json'] = pretty
-                                        # print("[adswizzContext JSON]\n" + pretty)
-                                    except Exception as e:
-                                        ad_metadata['adswizzContext_json'] = f"[decode error] {e}"
-                                        # print(f"[adswizzContext decode error] {e}")
-                                        # print(f"[adswizzContext raw] {value}")
-                                break
-                    # Handle regular song metadata
-                    if not in_ad and any(pattern in line.lower() for pattern in ['streamtitle', 'icy-metadata', 'title=', 'artist=', 'metadata update for streamtitle']):
-                        # print(f"[FFMPEG META DETECTED] {line}")
-                        try:
-                            title = None
-                            is_ad = False
-                            # Log the raw line for debugging
-                            logging.debug(f"Processing metadata line: {line}")
-                            # Check for regular metadata
-                            if 'streamtitle' in line.lower():
-                                if 'metadata update for streamtitle:' in line.lower():
-                                    title = line.split('StreamTitle:', 1)[1].strip()
-                                elif 'streamtitle     :' in line.lower():
-                                    title = line.split('StreamTitle     :', 1)[1].strip()
-                                elif 'streamtitle=' in line.lower():
-                                    title = line.split('StreamTitle=', 1)[1].strip()
-                            elif 'title=' in line.lower():
-                                title = line.split('title=', 1)[1].strip()
-                            if title:
-                                # Clean up the title
-                                title = title.strip(' -').strip('"\'')  # Remove quotes and extra spaces
-                                if title and title.lower() not in ['none', 'null', '']:
-                                    # print(f"[FFMPEG META EXTRACTED] {title}")
-                                    logging.debug(f"Extracted title: {title} (is_ad: {is_ad})")
-                                    metadata = {"title": title}
-                                    self.format_metadata(metadata)
-                                else:
-                                    # print(f"[FFMPEG META IGNORED] {title}")
-                                    logging.debug(f"Ignoring empty title: {title}")
-                        except Exception as e:
-                            logging.error(f"Metadata parse error: {e}")
-                            logging.debug(f"Failed line: {line}")
-            except Exception as e:
-                logging.error(f"Metadata monitor error: {e}")
-                self.stop_flag.set()
-    
-    monitor = StreamMetadataWithBuffer(args.url)
-    monitor.run()
+    monitor = StreamMetadataModular(args.url)
+    # Start only the requested features
+    threads = []
+    if ENABLE_METADATA:
+        t1 = threading.Thread(target=monitor.run_metadata_monitor, daemon=True)
+        threads.append(t1)
+        t1.start()
+    if ENABLE_AUDIO_MONITOR or ENABLE_AUDIO_METRICS:
+        t2 = threading.Thread(target=monitor.run_ffmpeg_audio_monitor, daemon=True)
+        threads.append(t2)
+        t2.start()
+    try:
+        while not monitor.stop_flag.is_set():
+            time.sleep(0.1)
+    except Exception as e:
+        logging.error(f"Runtime error in main loop: {e}")
+        monitor.stop_flag.set()
+    finally:
+        monitor.handle_signal(None, None)
 

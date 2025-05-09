@@ -328,9 +328,11 @@ output.dummy(fallible=true, s)
             self.stop_flag.set()
 
     def run(self):
+        buffering_status = 'LOW LATENCY' if NO_BUFFER else 'STANDARD'
         logging.info("🎧 Stream Metadata Monitor starting")
         logging.info(f"Stream: {self.stream_url}")
         logging.info(f"Audio output: {'ENABLED' if ENABLE_AUDIO else 'DISABLED'}")
+        logging.info(f"Buffering mode: {buffering_status}")
 
         try:
             # Start metadata monitor

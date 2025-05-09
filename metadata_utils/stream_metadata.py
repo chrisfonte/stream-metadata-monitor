@@ -106,13 +106,14 @@ class StreamMetadata:
         self.last_title = current_title
         self.last_type = current_type
         
+        # Output order: timestamp, stream URL, metadata, audio metrics, separator
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
         print(self.stream_url)
         if metadata.get('title'):
             if metadata.get('type') == 'ad':
-                print("\U0001f4e2 Now Playing (Ad):")
+                print("📢 Now Playing (Ad):")
             else:
-                print("\U0001f3b5 Now Playing:")
+                print("🎵 Now Playing:")
             if current_artist:
                 print(f"   Artist: {current_artist}")
             if current_title:
@@ -120,7 +121,7 @@ class StreamMetadata:
         # Only display audio metrics if enabled
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
-                print("\U0001f4ca Audio Levels:")
+                print("📊 Audio Levels:")
                 lufs = self.audio_metrics['integrated_lufs']
                 st_lufs = self.audio_metrics['short_term_lufs']
                 tp_db = self.audio_metrics['true_peak_db']
@@ -251,7 +252,7 @@ class StreamMetadata:
                     print(f"[DEBUG] FFmpeg process exited immediately with return code: {self.ffmpeg_audio_process.returncode}")
                 while not self.stop_flag.is_set() and self.ffmpeg_audio_process.poll() is None:
                     if ENABLE_AUDIO_METRICS:
-                        print("[DEBUG] Inside FFmpeg output loop for metrics")
+                        pass  # Removed debug print for clean output
                     line = self.ffmpeg_audio_process.stdout.readline().strip()
                     if line:
                         print(f"[FFMPEG OUT] {line}")
@@ -381,18 +382,19 @@ class StreamMetadata:
     def display_ad_metadata(self, ad_metadata: dict):
         if not ENABLE_METADATA_MONITOR:
             return
+        # Output order: timestamp, stream URL, metadata, audio metrics, separator
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
         print(self.stream_url)
-        print("\U0001f4e2 Now Playing (Ad):")
+        print("📢 Now Playing (Ad):")
         for k, v in ad_metadata.items():
             if k == 'adswizzContext_json':
-                print(f"  adswizzContext (decoded):\n{v}")
+                print(f"  🗂️ adswizzContext (decoded):\n{v}")
             elif k != 'adw_ad':
                 print(f"  {k}: {v}")
         # Only display audio metrics if enabled
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
-                print("\U0001f4ca Audio Levels:")
+                print("📊 Audio Levels:")
                 lufs = self.audio_metrics['integrated_lufs']
                 st_lufs = self.audio_metrics['short_term_lufs']
                 tp_db = self.audio_metrics['true_peak_db']
@@ -405,21 +407,16 @@ class StreamMetadata:
         sys.stdout.flush()
 
     def run(self):
-        buffering_status = 'LOW LATENCY' if NO_BUFFER else 'STANDARD'
+        buffering_status = 'ENABLED' if NO_BUFFER else 'DISABLED'
         audio_monitor_status = 'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'
         metadata_status = 'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'
         audio_metrics_status = 'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'
-        no_buffer_status = 'ENABLED' if NO_BUFFER else 'DISABLED'
-        logging.info("\U0001f3a7 Stream Monitor starting")
-        logging.info(f"\U0001f50a Audio monitor: {audio_monitor_status}")
-        logging.info(f"\u23e9 No buffer mode: {no_buffer_status}")
-        logging.info(f"\U0001f4dd Metadata: {metadata_status}")
-        logging.info(f"\U0001f4ca Audio metrics: {audio_metrics_status}")
-        logging.info(f"\U0001f310 Stream: {self.stream_url}")
-
-        print(f"[DEBUG] ENABLE_AUDIO_MONITOR: {ENABLE_AUDIO_MONITOR}")
-        print(f"[DEBUG] ENABLE_METADATA_MONITOR: {ENABLE_METADATA_MONITOR}")
-        print(f"[DEBUG] ENABLE_AUDIO_METRICS: {ENABLE_AUDIO_METRICS}")
+        # Output order and labels as requested, with icons
+        logging.info(f"🌐 Stream: {self.stream_url}")
+        logging.info(f"📝 Metadata Monitor: {metadata_status}")
+        logging.info(f"📊 Audio Metrics: {audio_metrics_status}")
+        logging.info(f"⏩ No Buffer: {buffering_status}")
+        logging.info(f"🔊 Audio Monitor: {audio_monitor_status}")
 
         try:
             # Start metadata monitor

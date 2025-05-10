@@ -50,11 +50,7 @@ class StreamMetadata:
         self.last_title: str = ""
         self.last_artist: str = ""
         self.last_type: str = ""
-        self.codec = "unknown"  # Will be set by FFmpeg output (aac, mp3)
-        self.bit_depth = "unknown"  # Will be set by FFmpeg output (pcm_s16le, etc)
-        self.sample_rate = "unknown"  # Will be set by FFmpeg output
-        self.buffered_metadata = None  # Buffer for metadata before type is known
-        self.last_display_time = 0  # Track when we last displayed metadata
+        self.type = "unknown"  # Will be set by FFmpeg output
 
         self.audio_metrics = {
             "integrated_lufs": None,
@@ -127,166 +123,126 @@ class StreamMetadata:
             result['title'] = song_title.strip()
         else:
             result['title'] = cleaned_title
-        logging.debug(f"Parsed title '{title}' into: {result}")
         return result
 
     def format_field_label(self, key):
         # Capitalize first letter, rest lower, replace underscores with spaces
         return key.replace('_', ' ').capitalize() + ':'
 
-    def format_duration(self, ms: str) -> str:
-        """Convert milliseconds to seconds for display"""
+    def write_json_with_history(self, metadata: Dict) -> None:
         try:
-            seconds = int(ms) / 1000
-            return f"{seconds:.1f} seconds"
-        except (ValueError, TypeError):
-            return ms
-
-    def write_json_with_history(self, current_event):
-        # Read the current JSON only to get the history
-        existing_data = self.read_json() or {}
-        existing_history = existing_data.get('history', [])
-        
-        logging.debug(f"Writing JSON with event type: {current_event.get('type', 'unknown')}")
-        logging.debug(f"Current event data: {current_event}")
-        
-        # Create fresh JSON structure with current event
-        data = {
-            'timestamp': current_event['timestamp'],
-            'stream': self.stream_url,
-            'stream_id': self.stream_id,
-            'codec': self.codec,
-            'bit_depth': self.bit_depth,
-            'sample_rate': self.sample_rate,
-            'title': current_event['title'],
-            'artist': current_event['artist'],
-            'type': current_event.get('type', 'song')  # Explicitly include type
-        }
-        
-        # Add any additional metadata fields from current event
-        for k, v in current_event.items():
-            if k not in ('history', 'timestamp', 'stream', 'stream_id', 'title', 'artist', 'type'):
-                data[k] = v
-                logging.debug(f"Adding additional field to JSON: {k}={v}")
-
-        # Prepare the new history event
-        history_event = {
-            'timestamp': current_event['timestamp'],
-            'type': current_event.get('type', 'song'),  # Include type in history
-            'artist': current_event['artist'],
-            'title': current_event['title']
-        }
-        
-        # For ads, add ad-specific fields
-        if history_event['type'] == 'ad':
-            for k, v in current_event.items():
-                if k in ('adId', 'durationMilliseconds', 'insertionType', 'adswizzContext'):
-                    history_event[k] = v
-        
-        # Add to existing history if not a duplicate and not too close in time
-        if existing_history:
-            last_event = existing_history[-1]
-            time_diff = datetime.strptime(history_event['timestamp'], '%Y-%m-%d %H:%M:%S') - \
-                       datetime.strptime(last_event['timestamp'], '%Y-%m-%d %H:%M:%S')
-            # Only add if it's been at least 5 seconds since the last event
-            if time_diff.total_seconds() >= 5 and (
-                (history_event['type'] == 'song' and (
-                    last_event.get('artist') != history_event.get('artist') or
-                    last_event.get('title') != history_event.get('title')
-                )) or
-                (history_event['type'] == 'ad' and (
-                    last_event.get('adId') != history_event.get('adId')
-                ))
-            ):
-                existing_history.append(history_event)
-                logging.debug(f"Added new history event: {history_event}")
-        else:
-            # First event in history
-            existing_history.append(history_event)
-            logging.debug(f"Added first history event: {history_event}")
-        
-        # Keep only the last 10
-        data['history'] = existing_history[-10:]
-        
-        # Write the complete fresh structure
-        logging.debug(f"Writing complete JSON structure: {data}")
-        self.write_json(data)
-
-    def format_sample_rate(self, rate: str) -> str:
-        """Convert sample rate to a more readable format (e.g., 44100 -> 44.1 KHz)"""
-        try:
-            rate_num = int(rate)
-            if rate_num >= 1000:
-                return f"{rate_num/1000:.1f} KHz"
-            return f"{rate_num} Hz"
-        except (ValueError, TypeError):
-            return rate
-
-    def format_codec_display(self, codec: str) -> str:
-        """Format codec for display (e.g., aac -> AAC)"""
-        return codec.upper() if codec in ('aac', 'mp3') else codec
+            # Read existing data
+            data = self.read_json() or {}
+            history = data.get('history', [])
+            
+            # Add new metadata to history
+            history.append(metadata)
+            
+            # Keep only last 10 entries
+            history = history[-10:]
+            
+            # Update data
+            data['history'] = history
+            data['current'] = metadata
+            
+            # Write back to file
+            self.write_json(data)
+        except Exception as e:
+            logging.error(f"Error writing JSON with history: {e}")
 
     def format_metadata(self, metadata: Dict) -> None:
         if not ENABLE_METADATA_MONITOR:
             return
+        # Always parse and overwrite artist/title
         title_info = self.parse_title(metadata.get('title', ''))
-        if title_info['artist']:
-            metadata['artist'] = title_info['artist']
-        metadata['title'] = title_info['title']
+        metadata['artist'] = title_info.get('artist', '')
+        metadata['title'] = title_info.get('title', '')
         current_artist = metadata['artist']
         current_title = metadata['title']
-        current_type = metadata.get('type', '')
+        # Set type based on adw_ad field
+        current_type = 'ad' if metadata.get('adw_ad') else 'song'
+        metadata['type'] = current_type
+        
+        # Create a unique key for this metadata
         current_key = f"{current_artist}|{current_title}|{current_type}"
         last_key = f"{self.last_artist}|{self.last_title}|{self.last_type}"
-        if current_key == last_key and current_key:
+        
+        # Skip if metadata hasn't changed
+        if current_key == last_key and current_key:  # Only skip if we have actual metadata
             return
+
+        # Update last seen metadata
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
         self.last_title = current_title
         self.last_type = current_type
+
+        # Create complete metadata dictionary with all required fields
         complete_metadata = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stream': self.stream_url,
             'stream_id': self.stream_id,
+            'type': current_type,  # Use the determined type
             'title': current_title,
-            'artist': current_artist,
-            'codec': self.codec,
-            'bit_depth': self.bit_depth,
-            'sample_rate': self.sample_rate
+            'artist': current_artist
         }
-        if current_type == 'ad':
-            complete_metadata['type'] = 'ad'
-        complete_metadata.update(metadata)
-        with self.audio_metrics_lock:
+
+        # Add audio properties only if they exist
+        if hasattr(self, 'codec'):
             complete_metadata.update({
-                'integrated_lufs': self.audio_metrics['integrated_lufs'],
-                'short_term_lufs': self.audio_metrics['short_term_lufs'],
-                'true_peak_db': self.audio_metrics['true_peak_db'],
-                'loudness_range_lu': self.audio_metrics['loudness_range_lu']
+                'codec': self.codec,
+                'sample_rate': self.sample_rate,
+                'bitrate': self.bitrate,
+                'channels': self.channels
             })
-        self.write_json_with_history(complete_metadata)
+
+        # Add any additional metadata fields
+        complete_metadata.update(metadata)
+
+        # Add audio metrics if available and enabled
+        if ENABLE_AUDIO_METRICS:
+            with self.audio_metrics_lock:
+                complete_metadata.update({
+                    'integrated_lufs': self.audio_metrics['integrated_lufs'],
+                    'short_term_lufs': self.audio_metrics['short_term_lufs'],
+                    'true_peak_db': self.audio_metrics['true_peak_db'],
+                    'loudness_range_lu': self.audio_metrics['loudness_range_lu']
+                })
+
+        # Display
         print(f"\n[{complete_metadata['timestamp']}]")
         print(f"Stream:")
         print(f"   URL: {self.stream_url}")
         print(f"   ID: {self.stream_id}")
-        print(f"\U0001F3A7 Audio Format:")
-        print(f"   Codec: {self.format_codec_display(complete_metadata['codec'])}")
-        print(f"   Bit Depth: {complete_metadata['bit_depth']}")
-        print(f"   Sample Rate: {self.format_sample_rate(complete_metadata['sample_rate'])}")
+        if hasattr(self, 'codec'):
+            print(f"\U0001F3A7 Audio:")
+            print(f"   Codec: {self.format_codec_display(complete_metadata['codec'])}")
+            print(f"   Sample Rate: {self.format_sample_rate(complete_metadata['sample_rate'])}")
+            print(f"   Bitrate: {complete_metadata['bitrate']} kbps")
+            print(f"   Channels: {complete_metadata['channels']}")
         if complete_metadata.get('type') == 'ad':
             print("\U0001F4E2 Now Playing (ad):")
         else:
             print("\U0001F3B5 Now Playing (song):")
         print(f"   Artist: {complete_metadata['artist']}")
         print(f"   Title: {complete_metadata['title']}")
+
+        # Show all other fields except special fields, artist, title
         for k, v in complete_metadata.items():
             if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream', 'stream_id',
                     'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu',
-                    'artist', 'title', 'codec', 'bit_depth', 'sample_rate', 'type'):
+                    'artist', 'title', 'type', 'codec', 'sample_rate', 'bitrate', 'channels'):
                 continue
-            print(f"   {self.format_field_label(k)} {v}")
+            if k == 'durationMilliseconds':
+                print(f"   Duration: {self.format_duration(v)}")
+            else:
+                print(f"   {self.format_field_label(k)} {v}")
+
+        # Show adswizzContext_json if present
         if 'adswizzContext_json' in complete_metadata:
             print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{complete_metadata['adswizzContext_json']}")
+
+        # Only display audio metrics if enabled
         if ENABLE_AUDIO_METRICS:
             print("\U0001F4CA Audio Levels:")
             lufs = complete_metadata['integrated_lufs']
@@ -297,24 +253,25 @@ class StreamMetadata:
             print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
             print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
             print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
-        # Fix: compare against current song event for filtering
+
+        # Display history, excluding the currently playing event
         data = self.read_json() or {}
         history = data.get('history', [])
-        filtered_history = [h for h in history if not (
-            (h.get('type') == 'song' and h.get('artist') == complete_metadata['artist'] and h.get('title') == complete_metadata['title']) or
-            (h.get('type') == 'ad' and h.get('adId') == complete_metadata.get('adId'))
+        filtered_history = [event for event in history if not (
+            event['artist'] == complete_metadata['artist'] and event['title'] == complete_metadata['title']
         )]
-        print("\nHistory (last 10):")
         if filtered_history:
-            for h in reversed(filtered_history):
-                if h.get('type') == 'song':
-                    print(f"  [{h['timestamp']}] {h['artist']} - {h['title']}")
+            print("\nHistory (last 10):")
+            for event in reversed(filtered_history):
+                if event.get('type') == 'song':
+                    print(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
                 else:
-                    print(f"  [{h['timestamp']}] Ad: {h.get('adId', 'Unknown')} ({self.format_duration(h.get('durationMilliseconds', '0'))})")
-        else:
-            print("  (No previous events)")
+                    print(f"  [{event['timestamp']}] Ad: {event.get('adId', 'Unknown')} ({self.format_duration(event.get('durationMilliseconds', '0'))})")
         print("-" * 50)
         sys.stdout.flush()
+
+        # Write to JSON
+        self.write_json_with_history(complete_metadata)
 
     def parse_ebur128_output(self, line: str) -> Dict[str, float]:
         metrics = {}
@@ -344,47 +301,25 @@ class StreamMetadata:
         return metrics
 
     def extract_stream_type_from_ffmpeg(self, line: str):
-        # Look for lines like: Stream #0:0: Audio: aac (LC), 44100 Hz, stereo, fltp, 64 kb/s
+        # Look for lines like: Stream #0:0: Audio: aac (LC), ...
         m = re.search(r'Audio: (\w+)', line)
         if m:
             codec = m.group(1).lower()
-            logging.debug(f"Found codec: {codec} in line: {line}")
-            # Set the container format (aac, mp3)
             if codec in ('aac', 'mp3'):
-                if self.codec != codec:
-                    logging.info(f"Setting stream codec to: {codec}")
-                    self.codec = codec
+                if self.type != codec:
+                    self.type = codec
                     # Update JSON with new type if available
                     last_json = self.read_json()
                     if last_json:
-                        last_json['codec'] = self.codec
-                        last_json['bit_depth'] = self.bit_depth
-                        last_json['sample_rate'] = self.sample_rate
+                        last_json['type'] = self.type
                         self.write_json(last_json)
-            # Set the actual bit depth (pcm_s16le, etc)
-            if self.bit_depth != codec:
-                logging.info(f"Setting stream bit depth to: {codec}")
-                self.bit_depth = codec
-                last_json = self.read_json()
-                if last_json:
-                    last_json['codec'] = self.codec
-                    last_json['bit_depth'] = self.bit_depth
-                    last_json['sample_rate'] = self.sample_rate
-                    self.write_json(last_json)
-        
-        # Look for sample rate
-        sr_match = re.search(r'(\d+) Hz', line)
-        if sr_match:
-            sample_rate = sr_match.group(1)
-            if self.sample_rate != sample_rate:
-                logging.info(f"Setting sample rate to: {sample_rate}")
-                self.sample_rate = sample_rate
-                last_json = self.read_json()
-                if last_json:
-                    last_json['codec'] = self.codec
-                    last_json['bit_depth'] = self.bit_depth
-                    last_json['sample_rate'] = self.sample_rate
-                    self.write_json(last_json)
+            else:
+                if self.type != codec:
+                    self.type = codec
+                    last_json = self.read_json()
+                    if last_json:
+                        last_json['type'] = self.type
+                        self.write_json(last_json)
 
     def run_ffmpeg_audio_monitor(self):
         # Only run if audio playback or audio metrics are enabled
@@ -507,7 +442,7 @@ class StreamMetadata:
             cmd = [
                 'ffmpeg',
                 '-hide_banner',
-                '-loglevel', 'debug' if DEBUG_MODE else 'error',
+                '-loglevel', 'debug',  # Keep debug level to see all output
                 '-headers', 'Icy-MetaData: 1\r\nIcy-MetaInt: 16000',
                 '-reconnect', '1',
                 '-reconnect_streamed', '1',
@@ -518,7 +453,6 @@ class StreamMetadata:
             ]
             if NO_BUFFER:
                 cmd[1:1] = ['-fflags', 'nobuffer']
-            logging.debug(f"Starting metadata monitor with command: {' '.join(cmd)}")
             self.metadata_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -529,7 +463,6 @@ class StreamMetadata:
             ad_metadata = {}
             in_ad = False
             ad_fields = ['adw_ad', 'adId', 'durationMilliseconds', 'insertionType', 'adswizzContext']
-            last_ad_update = 0  # Track when we last updated ad metadata
 
             while not self.stop_flag.is_set() and self.metadata_process.poll() is None:
                 line = self.metadata_process.stdout.readline().strip()
@@ -540,69 +473,31 @@ class StreamMetadata:
                 # Batch ad metadata
                 if 'metadata update for adw_ad:' in line.lower():
                     value = line.split(':', 2)[-1].strip().lower()
-                    logging.debug(f"Found adw_ad metadata: {value}")
                     if value == 'true':
                         in_ad = True
-                        ad_metadata = {'adw_ad': True}  # Reset ad metadata when entering ad mode
-                        logging.debug("Entering ad mode, reset ad metadata")
-                        # Update JSON with ad mode but preserve history
-                        existing_data = self.read_json() or {}
-                        existing_history = existing_data.get('history', [])
-                        self.write_json({
-                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'stream': self.stream_url,
-                            'stream_id': self.stream_id,
-                            'type': 'ad',
-                            'title': '[Ad]',
-                            'artist': '',
-                            'codec': self.codec,
-                            'bit_depth': self.bit_depth,
-                            'sample_rate': self.sample_rate,
-                            'history': existing_history  # Preserve existing history
-                        })
+                        ad_metadata['adw_ad'] = True
                         continue
                     else:
                         # adw_ad: false, treat as end of ad
                         if in_ad and ad_metadata:
-                            logging.debug(f"Exiting ad mode, displaying metadata: {ad_metadata}")
                             self.display_ad_metadata(ad_metadata)
                         ad_metadata = {}
                         in_ad = False
-                        logging.debug("Exiting ad mode, cleared ad metadata")
                         continue
                 if in_ad:
                     for field in ad_fields:
                         if f'metadata update for {field.lower()}:' in line.lower():
                             value = line.split(':', 2)[-1].strip()
                             ad_metadata[field] = value
-                            logging.debug(f"Found ad metadata for {field}: {value}")
                             # Special handling for adswizzContext
                             if field == 'adswizzContext':
                                 try:
-                                    # First try base64 decode
                                     decoded = base64.b64decode(value).decode('utf-8')
-                                    # Then try to parse as JSON
                                     json_obj = json.loads(decoded)
-                                    # Pretty print with indentation
                                     pretty = json.dumps(json_obj, indent=2)
                                     ad_metadata['adswizzContext_json'] = pretty
-                                    logging.debug(f"Decoded adswizzContext: {pretty}")
                                 except Exception as e:
-                                    logging.error(f"Error decoding adswizzContext: {e}")
-                                    # If base64 decode fails, try direct JSON parse
-                                    try:
-                                        json_obj = json.loads(value)
-                                        pretty = json.dumps(json_obj, indent=2)
-                                        ad_metadata['adswizzContext_json'] = pretty
-                                        logging.debug(f"Parsed adswizzContext directly: {pretty}")
-                                    except Exception as e2:
-                                        ad_metadata['adswizzContext_json'] = f"[decode error] {e2}"
-                                        logging.error(f"Error parsing adswizzContext directly: {e2}")
-                            # Update JSON with new ad metadata, but not too frequently
-                            current_time = time.time()
-                            if current_time - last_ad_update >= 2:  # Only update every 2 seconds
-                                self.display_ad_metadata(ad_metadata)
-                                last_ad_update = current_time
+                                    ad_metadata['adswizzContext_json'] = f"[decode error] {e}"
                             break
                 # Handle regular song metadata
                 if not in_ad and any(pattern in line.lower() for pattern in ['streamtitle', 'icy-metadata', 'title=', 'artist=', 'metadata update for streamtitle']):
@@ -626,8 +521,7 @@ class StreamMetadata:
                             title = title.strip(' -').strip('"\'')  # Remove quotes and extra spaces
                             if title and title.lower() not in ['none', 'null', '']:
                                 logging.debug(f"Extracted title: {title} (is_ad: {is_ad})")
-                                metadata = {"title": title, "type": "song"}
-                                logging.debug(f"Calling format_metadata with: {metadata}")
+                                metadata = {"title": title}
                                 self.format_metadata(metadata)
                             else:
                                 logging.debug(f"Ignoring empty title: {title}")
@@ -638,79 +532,31 @@ class StreamMetadata:
             logging.error(f"Metadata monitor error: {e}")
             self.stop_flag.set()
 
-    def decode_adswizz_context(self, value):
-        """Decode adswizzContext: base64, extract and pretty-print JSON if present."""
-        try:
-            decoded = base64.b64decode(value).decode('utf-8')
-            # Look for |json:{...} at the start
-            if decoded.startswith('|json:'):
-                json_part = decoded[6:].split('^|', 1)[0]
-                try:
-                    obj = json.loads(json_part)
-                    pretty = json.dumps(obj, indent=2)
-                    rest = decoded[6+len(json_part):]
-                    if rest:
-                        return f"JSON:\n{pretty}\nRest:{rest}"
-                    else:
-                        return f"JSON:\n{pretty}"
-                except Exception as e:
-                    return f"[decode error: JSON part] {e}\nRaw: {decoded}"
-            return decoded
-        except Exception as e:
-            # If base64 decode fails, try direct JSON parse
-            try:
-                obj = json.loads(value)
-                return json.dumps(obj, indent=2)
-            except Exception as e2:
-                return f"[decode error] {e2}\nRaw: {value}"
-
     def display_ad_metadata(self, ad_metadata: dict):
         if not ENABLE_METADATA_MONITOR:
             return
-        logging.debug(f"Displaying ad metadata: {ad_metadata}")
-        # Always set artist and title for ads
+        # Write to JSON and update history
         event = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stream': self.stream_url,
-            'stream_id': self.stream_id,
-            'type': 'ad',
-            'artist': '',
-            'title': '[Ad]',
-            'adw_ad': ad_metadata.get('adw_ad', True),
-            'adId': ad_metadata.get('adId', ''),
-            'durationMilliseconds': ad_metadata.get('durationMilliseconds', ''),
-            'insertionType': ad_metadata.get('insertionType', ''),
-            'adswizzContext': ad_metadata.get('adswizzContext', ''),
-            'adswizzContext_json': '',
-            'codec': self.codec,
-            'bit_depth': self.bit_depth,
-            'sample_rate': self.sample_rate
+            'artist': ad_metadata.get('artist', ''),
+            'title': ad_metadata.get('title', '[Ad]')
         }
-        # Decode adswizzContext if present
-        if event['adswizzContext']:
-            event['adswizzContext_json'] = self.decode_adswizz_context(event['adswizzContext'])
-        logging.debug(f"Created ad event: {event}")
-        self.write_json_with_history(event)
+        self.write_json_with_history({**ad_metadata, **event})
+        # Output order: timestamp, stream, stream ID, metadata fields, audio metrics, separator
         print(f"\n[{event['timestamp']}]")
-        print(f"Stream:")
-        print(f"   URL: {self.stream_url}")
-        print(f"   ID: {self.stream_id}")
-        print(f"\U0001F3A7 Audio Format:")
-        print(f"   Codec: {self.format_codec_display(event['codec'])}")
-        print(f"   Bit Depth: {event['bit_depth']}")
-        print(f"   Sample Rate: {self.format_sample_rate(event['sample_rate'])}")
-        print("\U0001F4E2 Now Playing (ad):")
+        print(f"Stream: {self.stream_url}")
+        print(f"Stream ID: {self.stream_id}")
+        print("\U0001F4E2 Now Playing (Ad):")
+        # Show Artist first, then Title for ads
         print(f"   Artist: {event['artist']}")
         print(f"   Title: {event['title']}")
-        for k, v in event.items():
-            if k in ('adw_ad', 'adswizzContext_json', 'artist', 'title', 'timestamp', 'stream', 'stream_id', 'codec', 'bit_depth', 'sample_rate', 'type', 'adswizzContext'):
+        # Show all other fields except special fields, artist, title
+        for k, v in ad_metadata.items():
+            if k in ('adw_ad', 'adswizzContext_json', 'artist', 'title'):
                 continue
-            if k == 'durationMilliseconds':
-                print(f"   Duration: {self.format_duration(v)}")
-            else:
-                print(f"   {self.format_field_label(k)} {v}")
-        if event['adswizzContext_json']:
-            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{event['adswizzContext_json']}")
+            print(f"   {self.format_field_label(k)} {v}")
+        if 'adswizzContext_json' in ad_metadata:
+            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{ad_metadata['adswizzContext_json']}")
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
                 print("\U0001F4CA Audio Levels:")
@@ -722,50 +568,18 @@ class StreamMetadata:
                 print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
                 print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
                 print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
-        # Fix: compare against current ad event for filtering
+        # Display history, excluding the currently playing event
         data = self.read_json() or {}
         history = data.get('history', [])
-        filtered_history = [h for h in history if not (
-            (h.get('type') == 'ad' and h.get('adId') == event.get('adId')) or
-            (h.get('type') == 'song' and h.get('artist') == event.get('artist') and h.get('title') == event.get('title'))
+        filtered_history = [event for event in history if not (
+            event['artist'] == event['artist'] and event['title'] == event['title']
         )]
-        print("\nHistory (last 10):")
         if filtered_history:
-            for h in reversed(filtered_history):
-                if h.get('type') == 'song':
-                    print(f"  [{h['timestamp']}] {h['artist']} - {h['title']}")
-                else:
-                    print(f"  [{h['timestamp']}] Ad: {h.get('adId', 'Unknown')} ({self.format_duration(h.get('durationMilliseconds', '0'))})")
-        else:
-            print("  (No previous events)")
+            print("\nHistory (last 10):")
+            for event in reversed(filtered_history):
+                print(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
         print("-" * 50)
         sys.stdout.flush()
-
-    def check_and_display_metadata(self):
-        """Periodically check and display metadata from JSON."""
-        while not self.stop_flag.is_set():
-            try:
-                current_time = time.time()
-                # Check every 2 seconds
-                if current_time - self.last_display_time >= 2:
-                    data = self.read_json()
-                    if data and data.get('title'):
-                        logging.debug("Timer: Checking JSON for display")
-                        # Create a metadata dict with the fields we need
-                        metadata = {
-                            'title': data.get('title', ''),
-                            'artist': data.get('artist', ''),
-                            'type': data.get('type', '')  # Only include type if it's an ad
-                        }
-                        # Add any additional fields from the JSON
-                        for k, v in data.items():
-                            if k not in ('title', 'artist', 'type', 'history', 'timestamp', 'stream', 'stream_id'):
-                                metadata[k] = v
-                        self.format_metadata(metadata)
-                        self.last_display_time = current_time
-            except Exception as e:
-                logging.error(f"Error in metadata display timer: {e}")
-            time.sleep(1)  # Check every second
 
     def run(self):
         buffering_status = 'ENABLED' if NO_BUFFER else 'DISABLED'
@@ -791,11 +605,6 @@ class StreamMetadata:
                 t2 = threading.Thread(target=self.run_ffmpeg_audio_monitor, daemon=True)
                 self.threads.append(t2)
                 t2.start()
-
-            # Start metadata display timer
-            t3 = threading.Thread(target=self.check_and_display_metadata, daemon=True)
-            self.threads.append(t3)
-            t3.start()
 
             while not self.stop_flag.is_set():
                 time.sleep(0.1)

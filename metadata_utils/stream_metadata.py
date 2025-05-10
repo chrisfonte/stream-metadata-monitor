@@ -20,6 +20,7 @@ import base64
 import random
 import string
 import atexit
+import hashlib
 
 # Configuration
 AUDIO_METRICS_INTERVAL = 1.0  # How often to update audio metrics (seconds)
@@ -33,8 +34,14 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(m
 class StreamMetadata:
     def __init__(self, stream_url="https://rfcm.streamguys1.com/00hits-mp3", stream_id=None):
         self.stream_url = stream_url
-        self.stream_id = stream_id or self.generate_stream_id()
-        self.json_path = f"{self.stream_id}.json"
+        if stream_id:
+            self.stream_id = stream_id
+            self.json_path = f"{self.stream_id}.json"
+        else:
+            # Use the mount name for the JSON filename
+            mount = self.stream_url.split('/')[-1]
+            self.json_path = f"{mount}.json"
+            self.stream_id = None  # Do not set stream_id if not provided
         self.ffmpeg_audio_process: Optional[subprocess.Popen] = None
         self.metadata_process: Optional[subprocess.Popen] = None
         self.stop_flag = threading.Event()
@@ -57,8 +64,6 @@ class StreamMetadata:
 
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
-
-        atexit.register(self.cleanup_json)
 
     def generate_stream_id(self):
         # Generate NA followed by 4 random digits
@@ -95,7 +100,6 @@ class StreamMetadata:
             if thread.is_alive():
                 thread.join(timeout=2.0)
         self.terminate_processes()
-        self.cleanup_json()  # Ensure JSON is cleaned up
         logging.info("Shutdown complete.")
 
     def terminate_processes(self):
@@ -132,6 +136,9 @@ class StreamMetadata:
         for k, v in current_event.items():
             if k != 'history':
                 data[k] = v
+        # Only include stream_id if it was provided
+        if self.stream_id:
+            data['stream_id'] = self.stream_id
         # Prepare the event for history (only fields we care about)
         history_event = {
             'timestamp': current_event['timestamp'],
@@ -181,10 +188,11 @@ class StreamMetadata:
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stream': self.stream_url,
             'stream_id': self.stream_id,
-            'type': display_type,  # Use the stream type detected from FFmpeg or (detecting...)
             'title': current_title,  # Only the parsed title
             'artist': current_artist  # Only the parsed artist
         }
+        if self.type != 'unknown':
+            complete_metadata['type'] = self.type
         # Add any additional metadata fields
         complete_metadata.update(metadata)
         # Add audio metrics if available
@@ -211,6 +219,9 @@ class StreamMetadata:
         # Show Artist first, then Title
         print(f"   Artist: {complete_metadata['artist']}")
         print(f"   Title: {complete_metadata['title']}")
+        # Show type if present
+        if 'type' in complete_metadata:
+            print(f"   Type: {complete_metadata['type']}")
         # Show all other fields except special fields, artist, title
         for k, v in complete_metadata.items():
             if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream', 'stream_id',

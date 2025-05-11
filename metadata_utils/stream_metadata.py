@@ -176,8 +176,6 @@ class StreamMetadata:
         try:
             data = self.read_json() or {}
             history = data.get('history', [])
-
-            # Only event metadata for history
             history_metadata = {
                 'timestamp': metadata['timestamp'],
                 'stream_url': metadata['stream_url'],
@@ -190,8 +188,6 @@ class StreamMetadata:
                              history[-1]['artist'] != history_metadata['artist']):
                 history.append(history_metadata)
             history = history[-10:]
-
-            # Only update audio_properties if all values are not 'unknown'
             if 'server' not in data:
                 data['server'] = {}
             valid_audio = all(
@@ -200,15 +196,12 @@ class StreamMetadata:
             if hasattr(self, 'audio_info_locked') and self.audio_info_locked and valid_audio:
                 self.audio_properties = {
                     'codec': self.codec,
-                    'sample_rate': self.sample_rate,
+                    'sample_rate': self.sample_rate,  # Store as integer
                     'bitrate': self.bitrate,
                     'channels': self.channels
                 }
-            # Always write the current value of self.audio_properties
             if self.audio_properties:
                 data['server']['audio_properties'] = self.audio_properties
-
-            # Only event metadata for current
             event_metadata = {
                 'timestamp': metadata['timestamp'],
                 'stream_url': metadata['stream_url'],
@@ -272,6 +265,19 @@ class StreamMetadata:
         data = self.read_json() or {}
         server = data.get('server', {})
         audio_props = server.get('audio_properties', {})
+        def show_bitrate(value, last_known_value):
+            def fmt(val):
+                if val and val != 'unknown':
+                    try:
+                        return f"{int(val)} Kbps"
+                    except Exception:
+                        return f"{val} Kbps"
+                return "unknown"
+            if value and value != 'unknown':
+                return f"Bitrate: {fmt(value)}"
+            elif last_known_value and last_known_value != 'unknown':
+                return f"Bitrate: {fmt(last_known_value)} (last known)"
+            return "Bitrate: unknown"
         def show_prop(label, value, last_known_value):
             if value and value != 'unknown':
                 return f"{label}: {value}"
@@ -284,7 +290,7 @@ class StreamMetadata:
         print(f"   ID: {metadata['stream_id']}")
         print(f"\U0001F3A7 Audio:")
         print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
-        print(f"   {show_prop('Bitrate', self.bitrate, audio_props.get('bitrate', 'unknown'))}")
+        print(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
         print(f"   {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
         print(f"   {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
         if metadata.get('type') == 'ad':
@@ -360,27 +366,28 @@ class StreamMetadata:
             return rate
 
     def parse_ffmpeg_audio_stream_info(self, line: str):
-        """Parse codec, sample rate, channels, and bitrate from the 'Stream #0:0' line in FFmpeg output. Only set from first real codec (not PCM)."""
         try:
             if 'Stream #0:0' in line and 'Audio:' in line and not self.audio_info_locked:
                 parts = line.split('Audio:')[-1].split(',')
                 if len(parts) >= 5:
                     codec = parts[0].strip().lower()
-                    # Only set if codec is not PCM/decoded
                     if codec not in ("pcm_s16le", "pcm_f32le", "pcm_s24le", "pcm_s32le", "fltp", "s16p", "s32p"):
                         self.codec = codec
-                        self.sample_rate = parts[1].strip().replace('Hz', '').strip()
+                        try:
+                            self.sample_rate = int(parts[1].strip().replace('Hz', '').strip())
+                        except Exception:
+                            self.sample_rate = parts[1].strip().replace('Hz', '').strip()
                         self.channels = parts[2].strip().lower()
                         for part in parts:
                             if 'kb/s' in part:
                                 try:
                                     bitrate = int(part.strip().split(' ')[0])
-                                    self.bitrate = f"{bitrate} Kbps" if bitrate < 1000 else "unknown"
+                                    self.bitrate = bitrate
                                     break
                                 except Exception:
                                     continue
                         self.audio_info_ready = True
-                        self.audio_info_locked = True  # Lock in after first real codec
+                        self.audio_info_locked = True
                         if not args.silent:
                             logging.debug(f"FFmpeg parsed: codec={self.codec}, sample_rate={self.sample_rate}, channels={self.channels}, bitrate={self.bitrate}")
                 return

@@ -625,7 +625,7 @@ class StreamMetadata:
             logging.error(f"Error updating connection status: {e}")
 
     def run_ffmpeg_audio_monitor(self):
-        """Run FFmpeg to monitor audio levels and optionally play audio"""
+        """Run FFmpeg to play audio through PulseAudio"""
         try:
             cmd = [
                 'ffmpeg',
@@ -636,32 +636,31 @@ class StreamMetadata:
                 '-reconnect_streamed', '1',
                 '-reconnect_delay_max', '5',
                 '-i', self.stream_url,
-                '-f', 'f32le',  # Use float32 PCM for audio analysis
-                '-ar', '44100',  # Sample rate
-                '-ac', '2',      # Stereo
-                '-'
+                '-f', 'pulse',
+                'default'
             ]
             if NO_BUFFER:
                 cmd[1:1] = ['-fflags', 'nobuffer']
 
-            # If audio monitor is enabled, pipe to PulseAudio
-            if ENABLE_AUDIO_MONITOR:
-                cmd.extend([
-                    '-f', 'pulse',
-                    '-i', 'pipe:0',
-                    '-f', 'pulse',
-                    'default'
-                ])
-
+            logging.info("Starting audio playback...")
             self.ffmpeg_audio_process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.PIPE if ENABLE_AUDIO_MONITOR else None
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE
             )
 
-            # Wait for process to complete
-            self.ffmpeg_audio_process.wait()
+            # Monitor the process
+            while not self.stop_flag.is_set():
+                if self.ffmpeg_audio_process.poll() is not None:
+                    # Process died, try to restart
+                    logging.error("Audio process died, attempting to restart...")
+                    self.ffmpeg_audio_process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE
+                    )
+                time.sleep(1)  # Check every second
+
         except Exception as e:
             logging.error(f"Error running audio monitor: {e}")
             self.stop_flag.set()

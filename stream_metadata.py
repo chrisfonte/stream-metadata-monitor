@@ -57,6 +57,7 @@ class StreamMetadata:
         self.sample_rate = "unknown"  # Will be set by icy-audio-info
         self.bitrate = "unknown"  # Will be set by icy-audio-info
         self.channels = "unknown"  # Will be set by icy-audio-info
+        self.format = None  # Added for decoded format
 
         self.audio_metrics = {
             "integrated_lufs": None,
@@ -67,6 +68,13 @@ class StreamMetadata:
         self.audio_metrics_lock = threading.Lock()
         self.threads: list[threading.Thread] = []
         self.audio_levels_displayed = False  # Track if valid audio levels have been shown
+        self.audio_info_ready = False  # New flag to track first update
+        self.audio_info_locked = False  # New flag to lock in real codec info
+
+        # Read last known audio properties from JSON at startup
+        existing_data = self.read_json() or {}
+        stream_section = existing_data.get('stream', {})
+        self.audio_properties = stream_section.get('audio_properties', {}).copy() if 'audio_properties' in stream_section else {}
 
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
@@ -78,8 +86,6 @@ class StreamMetadata:
         # Initialize JSON with startup info
         startup_info = {
             'started': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stream_url': self.stream_url,
-            'stream_id': self.stream_id,
             'connection_status': self.connection_status,
             'flags': {
                 'audio_monitor': ENABLE_AUDIO_MONITOR,
@@ -93,8 +99,14 @@ class StreamMetadata:
         # Initialize JSON with preserved history and current
         data = {
             'server': startup_info,
-            'current': None,
-            'history': existing_history  # Preserve existing history
+            'stream': {
+                'url': self.stream_url,
+                'id': self.stream_id
+            },
+            'metadata': {
+                'current': None,
+                'history': existing_history  # Preserve existing history
+            }
         }
         self.write_json(data)
 
@@ -166,15 +178,12 @@ class StreamMetadata:
 
     def write_json_with_history(self, metadata: Dict) -> None:
         try:
-            # Read existing data
             data = self.read_json() or {}
-            history = data.get('history', [])
+            history = data.get('metadata', {}).get('history', [])
             
             # Create a simplified version for history without technical details
             history_metadata = {
                 'timestamp': metadata['timestamp'],
-                'stream_url': metadata['stream_url'],
-                'stream_id': metadata['stream_id'],
                 'type': metadata['type'],
                 'title': metadata['title'],
                 'artist': metadata['artist']
@@ -189,9 +198,28 @@ class StreamMetadata:
             history = history[-10:]
             
             # Update data
-            data['history'] = history
-            data['current'] = metadata  # Keep full metadata in current
+            if 'metadata' not in data:
+                data['metadata'] = {}
+            data['metadata']['history'] = history
+            # Only store filtered metadata in current (no audio properties)
+            filtered_metadata = {k: v for k, v in metadata.items() if k not in ('codec', 'sample_rate', 'bitrate', 'channels')}
+            data['metadata']['current'] = filtered_metadata
             
+            # Store audio_properties under stream
+            valid_audio = all(
+                v and v != 'unknown' for v in [self.codec, self.sample_rate, self.bitrate, self.channels]
+            )
+            if hasattr(self, 'audio_info_locked') and self.audio_info_locked and valid_audio:
+                self.audio_properties = {
+                    'codec': self.codec,
+                    'sample_rate': self.sample_rate,  # Store as integer
+                    'bitrate': self.bitrate,
+                    'channels': self.channels
+                }
+            if 'stream' not in data:
+                data['stream'] = {'url': self.stream_url, 'id': self.stream_id}
+            if self.audio_properties:
+                data['stream']['audio_properties'] = self.audio_properties
             # Write back to file
             with open(self.json_path, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -200,53 +228,36 @@ class StreamMetadata:
 
     def process_metadata(self, metadata: Dict) -> None:
         """Process metadata and update JSON, regardless of display settings"""
-        # Always parse and overwrite artist/title
         title_info = self.parse_title(metadata.get('title', ''))
         metadata['artist'] = title_info.get('artist', '')
         metadata['title'] = title_info.get('title', '')
         current_artist = metadata['artist']
         current_title = metadata['title']
-        # Set type based on adw_ad field
         current_type = 'ad' if metadata.get('adw_ad') else 'song'
         metadata['type'] = current_type
-        
-        # Create a unique key for this metadata
         current_key = f"{current_artist}|{current_title}|{current_type}"
         last_key = f"{self.last_artist}|{self.last_title}|{self.last_type}"
-        
-        # Skip if metadata hasn't changed
-        if current_key == last_key and current_key:  # Only skip if we have actual metadata
+
+        # Always process the very first metadata event after launch
+        if not hasattr(self, 'has_seen_first_metadata'):
+            self.has_seen_first_metadata = True
+        elif current_key == last_key and current_key:
             return
 
-        # Update last seen metadata
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
         self.last_title = current_title
         self.last_type = current_type
 
-        # Create complete metadata dictionary with all required fields
+        # Remove audio property fields from metadata before saving to current/history
+        filtered_metadata = {k: v for k, v in metadata.items() if k not in ('codec', 'sample_rate', 'bitrate', 'channels')}
         complete_metadata = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stream_url': self.stream_url,
-            'stream_id': self.stream_id,
             'type': current_type,
             'title': current_title,
             'artist': current_artist
         }
-
-        # Add audio properties only if they exist
-        if hasattr(self, 'codec'):
-            complete_metadata.update({
-                'codec': self.codec,
-                'sample_rate': self.sample_rate,
-                'bitrate': self.bitrate,
-                'channels': self.channels
-            })
-
-        # Add any additional metadata fields
-        complete_metadata.update(metadata)
-
-        # Add audio metrics if available and enabled
+        complete_metadata.update(filtered_metadata)
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
                 complete_metadata.update({
@@ -255,26 +266,43 @@ class StreamMetadata:
                     'true_peak_db': self.audio_metrics['true_peak_db'],
                     'loudness_range_lu': self.audio_metrics['loudness_range_lu']
                 })
-
-        # Always write to JSON
         self.write_json_with_history(complete_metadata)
-
-        # Only display if not in silent mode
         if not args.silent:
             self.display_metadata(complete_metadata)
 
     def display_metadata(self, metadata: Dict) -> None:
-        """Display metadata if enabled"""
+        data = self.read_json() or {}
+        server = data.get('server', {})
+        stream = data.get('stream', {})
+        audio_props = stream.get('audio_properties', {})
+        def show_bitrate(value, last_known_value):
+            def fmt(val):
+                if val and val != 'unknown':
+                    try:
+                        return f"{int(val)} Kbps"
+                    except Exception:
+                        return f"{val} Kbps"
+                return "unknown"
+            if value and value != 'unknown':
+                return f"Bitrate: {fmt(value)}"
+            elif last_known_value and last_known_value != 'unknown':
+                return f"Bitrate: {fmt(last_known_value)} (last known)"
+            return "Bitrate: unknown"
+        def show_prop(label, value, last_known_value):
+            if value and value != 'unknown':
+                return f"{label}: {value}"
+            elif last_known_value and last_known_value != 'unknown':
+                return f"{label}: {last_known_value} (last known)"
+            return f"{label}: unknown"
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
-        print(f"   URL: {metadata['stream_url']}")
-        print(f"   ID: {metadata['stream_id']}")
-        if hasattr(self, 'codec'):
-            print(f"\U0001F3A7 Audio:")
-            print(f"   Codec: {self.format_codec_display(metadata['codec'])}")
-            print(f"   Sample Rate: {self.format_sample_rate(metadata['sample_rate'])}")
-            print(f"   Bitrate: {metadata['bitrate']}")
-            print(f"   Channels: {metadata['channels']}")
+        print(f"   URL: {stream.get('url', 'unknown')}")
+        print(f"   ID: {stream.get('id', 'unknown')}")
+        print(f"\U0001F3A7 Audio:")
+        print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
+        print(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
+        print(f"   {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
+        print(f"   {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
         if metadata.get('type') == 'ad':
             print("\U0001F4E2 Now Playing (ad):")
         else:
@@ -310,8 +338,7 @@ class StreamMetadata:
             print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
 
         # Display history, excluding the currently playing event
-        data = self.read_json() or {}
-        history = data.get('history', [])
+        history = data.get('metadata', {}).get('history', [])
         filtered_history = [event for event in history if not (
             event['artist'] == metadata['artist'] and event['title'] == metadata['title']
         )]
@@ -331,6 +358,8 @@ class StreamMetadata:
             return 'AAC'
         elif codec == 'mp3':
             return 'MP3'
+        elif codec == 'unknown':
+            return 'unknown'
         return codec.upper()
 
     def format_sample_rate(self, rate: str) -> str:
@@ -346,53 +375,65 @@ class StreamMetadata:
             return rate
 
     def parse_ffmpeg_audio_stream_info(self, line: str):
-        """Parse audio stream info from FFmpeg output"""
         try:
-            # Look for codec info - specifically MP3 or AAC
-            codec_match = re.search(r'Audio: (\w+)', line)
-            if codec_match:
-                codec = codec_match.group(1).lower()
-                if codec in ('mp3', 'aac'):
-                    self.codec = codec.upper()
-                else:
-                    self.codec = "UNKNOWN"
-            
-            # Look for sample rate
-            rate_match = re.search(r'(\d+) Hz', line)
-            if rate_match:
-                self.sample_rate = rate_match.group(1)
-            
-            # Look for channels - specifically mono or stereo
-            channels_match = re.search(r'(\d+) channels', line)
-            if channels_match:
-                num_channels = int(channels_match.group(1))
-                self.channels = "stereo" if num_channels == 2 else "mono"
-            
-            # Look for bitrate - specifically in kbps
-            bitrate_match = re.search(r'(\d+) kb/s', line)
-            if bitrate_match:
-                self.bitrate = f"{bitrate_match.group(1)} kbps"
+            if 'Stream #0:0' in line and 'Audio:' in line and not self.audio_info_locked:
+                parts = line.split('Audio:')[-1].split(',')
+                if len(parts) >= 5:
+                    codec = parts[0].strip().lower()
+                    if codec not in ("pcm_s16le", "pcm_f32le", "pcm_s24le", "pcm_s32le", "fltp", "s16p", "s32p"):
+                        self.codec = codec
+                        try:
+                            self.sample_rate = int(parts[1].strip().replace('Hz', '').strip())
+                        except Exception:
+                            self.sample_rate = parts[1].strip().replace('Hz', '').strip()
+                        self.channels = parts[2].strip().lower()
+                        for part in parts:
+                            if 'kb/s' in part:
+                                try:
+                                    bitrate = int(part.strip().split(' ')[0])
+                                    self.bitrate = bitrate
+                                    break
+                                except Exception:
+                                    continue
+                        self.audio_info_ready = True
+                        self.audio_info_locked = True
+                        if not args.silent:
+                            logging.debug(f"FFmpeg parsed: codec={self.codec}, sample_rate={self.sample_rate}, channels={self.channels}, bitrate={self.bitrate}")
+                return
         except Exception as e:
             logging.error(f"Error parsing FFmpeg audio info: {e}")
 
     def parse_icy_audio_info(self, line: str):
-        """Parse ICY audio info"""
+        """Parse ICY audio info (fallback only, do not error if missing)"""
         try:
-            # Look for sample rate
-            rate_match = re.search(r'(\d+) Hz', line)
-            if rate_match:
-                self.sample_rate = rate_match.group(1)
-            
-            # Look for bitrate - specifically in kbps
-            bitrate_match = re.search(r'(\d+) kbps', line)
-            if bitrate_match:
-                self.bitrate = f"{bitrate_match.group(1)} kbps"
-            
-            # Look for channels - specifically mono or stereo
-            channels_match = re.search(r'(\d+) channels', line)
-            if channels_match:
-                num_channels = int(channels_match.group(1))
-                self.channels = "stereo" if num_channels == 2 else "mono"
+            if 'icy-audio-info' in line:
+                info = line.split(':', 1)[1].strip()
+                pairs = info.split(';')
+                for pair in pairs:
+                    if '=' not in pair:
+                        continue
+                    key, value = pair.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key == 'ice-samplerate' and self.sample_rate == "unknown":
+                        self.sample_rate = value
+                    elif key == 'ice-bitrate' and self.bitrate == "unknown":
+                        bitrate = int(value)
+                        if bitrate > 1000:
+                            self.bitrate = "unknown"
+                        else:
+                            self.bitrate = f"{bitrate} Kbps"
+                    elif key == 'ice-channels' and self.channels == "unknown":
+                        num_channels = int(value)
+                        self.channels = "stereo" if num_channels == 2 else "mono"
+                    self.audio_info_ready = True  # Set flag after first update
+            if 'icy-br' in line and self.bitrate == "unknown":
+                bitrate = int(line.split(':', 1)[1].strip())
+                if bitrate > 1000:
+                    self.bitrate = "unknown"
+                else:
+                    self.bitrate = f"{bitrate} Kbps"
+                self.audio_info_ready = True
         except Exception as e:
             logging.error(f"Error parsing ICY audio info: {e}")
 
@@ -421,7 +462,30 @@ class StreamMetadata:
                 self.threads.append(t2)
                 t2.start()
 
+            # Wait for audio info to be ready, then force update if no metadata event
+            waited = 0
             while not self.stop_flag.is_set():
+                if self.audio_info_ready and not self.audio_levels_displayed:
+                    for _ in range(50):
+                        if self.last_metadata:
+                            break
+                        time.sleep(0.1)
+                    if not self.last_metadata:
+                        minimal_metadata = {
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'type': 'unknown',
+                            'title': '',
+                            'artist': '',
+                            'codec': self.codec,
+                            'sample_rate': self.sample_rate,
+                            'bitrate': self.bitrate,
+                            'channels': self.channels
+                        }
+                        self.last_metadata = minimal_metadata.copy()
+                        self.write_json_with_history(minimal_metadata)
+                        if not args.silent:
+                            self.display_metadata(minimal_metadata)
+                    self.audio_levels_displayed = True
                 time.sleep(0.1)
         except Exception as e:
             logging.error(f"Runtime error in main loop: {e}")
@@ -525,12 +589,12 @@ class StreamMetadata:
                     logging.debug(f"FFmpeg: {line}")
 
                 # Try to parse audio info from FFmpeg output
-                if 'Audio:' in line:
+                if any(pattern in line for pattern in ['Audio:', 'Stream #0:0', 'Stream #0:1']):
                     self.parse_ffmpeg_audio_stream_info(line)
                     self.update_connection_status("connected")  # We got audio info, definitely connected
 
                 # Handle icy-audio-info
-                if 'icy-audio-info:' in line:
+                if any(pattern in line for pattern in ['icy-audio-info', 'icy-br']):
                     self.parse_icy_audio_info(line)
                     self.update_connection_status("connected")  # We got icy info, definitely connected
                     continue
@@ -618,6 +682,8 @@ class StreamMetadata:
         try:
             with open(self.json_path, 'r+') as f:
                 data = json.load(f)
+                if 'server' not in data:
+                    data['server'] = {}
                 data['server']['connection_status'] = status
                 f.seek(0)
                 json.dump(data, f, indent=2)

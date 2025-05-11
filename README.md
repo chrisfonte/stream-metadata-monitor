@@ -1,173 +1,107 @@
 # Stream Metadata Monitor
 
-A Python-based toolkit for monitoring and analyzing audio streams in real-time, displaying metadata, and playing audio output. Built on top of Liquidsoap, this project provides an easy way to monitor internet radio stations and streaming services.
-
-![Stream Metadata Monitor](https://raw.githubusercontent.com/chrisfonte/stream-metadata-monitor/assets/screenshots/main_screenshot.png)
+A Python-based toolkit for monitoring and analyzing audio streams in real-time, displaying metadata, and playing audio output. This project provides an easy way to monitor internet radio stations and streaming services with rich metadata and audio metrics.
 
 ## Features
 
-- ✨ Real-time stream metadata display (artist, title, audio quality)
+- ✨ Real-time stream metadata display (artist, title, type, etc.)
 - 🔊 Audio playback through PulseAudio/PipeWire
-- 📊 Optional audio level monitoring with visual meters
-- 🎯 Advertisement detection and tracking
-- 🧩 Modular design with separate utilities for different use cases
-- 📋 Clean, easy-to-read terminal output
+- 📊 Optional audio level monitoring (LUFS, True Peak, Loudness Range)
+- 🎯 Advertisement detection and logging (ads appear in main display and history)
+- 🧩 Modular, thread-based design for robust monitoring
+- 📋 Clean, easy-to-read terminal output with history of last 10 events
 - 🔄 Automatic reconnection to streams
-- 🎛️ Configurable settings via environment variables or constants
-
-## Contents
-
-This repository contains three main Python scripts:
-
-1. **stream_metadata.py**: The main monitoring tool with audio playback and comprehensive metadata display
-2. **metadata_monitor.py**: A simpler utility for basic metadata parsing of stream data
-3. **format_metadata.py**: A utility for formatting and processing metadata
-
-## Prerequisites
-
-- **Python 3.6+**
-- **Liquidsoap 2.0+** - The powerful audio streaming software that powers this tool
-- **PulseAudio** or **PipeWire** - For audio output
-- **Terminal** with UTF-8 support for proper display of indicators and meters
-
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/chrisfonte/stream-metadata-monitor.git
-cd stream-metadata-monitor
-```
-
-### 2. Install Liquidsoap
-
-#### Ubuntu/Debian/Pop!_OS:
-```bash
-sudo apt-get update
-sudo apt-get install liquidsoap
-```
-
-#### Fedora:
-```bash
-sudo dnf install liquidsoap
-```
-
-#### macOS:
-```bash
-brew install liquidsoap
-```
-
-### 3. Verify Installation
-
-Ensure Liquidsoap is correctly installed:
-```bash
-liquidsoap --version
-```
+- 🎛️ Configurable via command-line arguments
+- 📝 In-JSON event history: last 10 events (songs/ads) stored in the main JSON file
 
 ## Usage
 
 ### Basic Usage
 
-Monitor a stream (defaults to https://rfcm.streamguys1.com/00hits-mp3):
+Monitor a stream (defaults to https://example.com/your-stream.mp3):
 ```bash
 python3 stream_metadata.py
 ```
 
 ### Monitor a Custom Stream
-
 ```bash
 python3 stream_metadata.py "https://ice1.somafm.com/groovesalad-256-mp3"
 ```
 
-### Disable Audio Output
+### Specify a Stream ID
+```bash
+python3 stream_metadata.py <stream_url> --stream_id <your_id>
+```
 
-Edit the `ENABLE_AUDIO` constant at the top of `stream_metadata.py` to `False`
+### Enable/Disable Features
+- `--audio_monitor` : Enable audio playback
+- `--metadata_monitor` : Enable metadata display
+- `--audio_metrics` : Enable audio metrics (LUFS, etc.)
+- `--no_buffer` : Reduce FFmpeg buffering for lower latency
+- `--debug` : Enable debug output
 
-### Disable Level Monitoring
+If no feature flags are specified, all features are enabled by default.
 
-Edit the `ENABLE_LEVELS` constant at the top of `stream_metadata.py` to `False`
+## Event History
+- The last 10 events (songs and ads) are stored in the main JSON file under the `history` field.
+- Each event includes its own timestamp, artist, and title.
+- The history is displayed below the current playing info, excluding the currently playing event.
 
-## Configuration Options
+## Example Output
+```
+[2025-05-09 16:42:36]
+Stream: https://example.com/your-stream.mp3
+Stream ID: NA4439
+🎵 Now Playing:
+   Artist: Kenny G.
+   Title: Japan
+   Type: aac
+📊 Audio Levels:
+   Integrated LUFS: N/A
+   Short-term LUFS: N/A
+   True Peak: N/A
+   Loudness Range: N/A
 
-You can customize the behavior by editing the constants at the top of each script file:
+History (last 10):
+  [2025-05-09 16:41:12] John Mayer - No Such Thing (Acoustic)
+  [2025-05-09 16:40:01] ...
+--------------------------------------------------
+```
 
-- `ENABLE_AUDIO`: Enable/disable audio playback
-- `ENABLE_LEVELS`: Enable/disable audio level monitoring
-- `LEVEL_UPDATE_INTERVAL`: How often to update level meters (in seconds)
+## Prerequisites
+- **Python 3.6+**
+- **FFmpeg** (for stream decoding and metrics)
+- **PulseAudio** or **PipeWire** (for audio output)
+- **Terminal** with UTF-8 support
 
-## Understanding Script Components
+## Installation
 
-### stream_metadata.py
-
-The main script that:
-- Connects to audio streams via Liquidsoap
-- Displays metadata changes in real-time
-- Shows audio quality information
-- Detects advertisements
-- Can monitor audio levels
-- Plays audio through your system
-
-### metadata_monitor.py
-
-A simpler utility that:
-- Monitors metadata blocks from standard input
-- Parses and formats them as JSON
-- Useful for integration with other tools
-
-### format_metadata.py
-
-A utility for:
-- Formatting radio metadata
-- Parsing artist/title information
-- Cleaning up metadata for display
-
-## Troubleshooting
-
-### No Audio Output
-
-1. Ensure PulseAudio/PipeWire is running: `pulseaudio --check`
-2. Verify audio levels aren't muted: `pactl set-sink-volume @DEFAULT_SINK@ 100%`
-3. Try a different stream URL to verify if it's a stream issue
-4. If using PipeWire, try disabling level monitoring: `ENABLE_LEVELS=False`
-
-### Connection Issues
-
-1. Verify the stream URL is accessible: `curl -I [stream_url]`
-2. Check your internet connection
-3. Some streams may require user-agent headers (not currently supported)
-
-### Metadata Not Displaying
-
-1. Some streams don't provide metadata
-2. Try a known good stream like: `https://ice1.somafm.com/groovesalad-256-mp3`
+1. Clone the repository:
+```bash
+git clone https://github.com/chrisfonte/stream-metadata-monitor.git
+cd stream-metadata-monitor
+```
+2. Install FFmpeg and PulseAudio (or PipeWire) as needed for your OS.
 
 ## Advanced Usage
 
-### Integration with Other Tools
+- The script is modular and can be extended for integration with other tools.
+- The JSON file for each stream contains the current metadata and the last 10 events in `history`.
+- Ad events are logged and displayed just like songs.
 
-The output from `metadata_monitor.py` can be piped to other applications:
-
-```bash
-liquidsoap 'output.file(%mp3, "metadata_output.txt", input.http("https://example.com/stream"))' | python3 metadata_monitor.py
-```
-
-### Running in the Background
-
-To run the monitor in the background:
-
-```bash
-nohup python3 stream_metadata.py > stream_log.txt 2>&1 &
-```
+## Troubleshooting
+- If you see no metadata, try a different stream URL.
+- If audio metrics are N/A, ensure FFmpeg is installed and the stream is active.
+- For connection issues, check your network and stream URL.
 
 ## Contributing
-
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License
 
 ## Acknowledgments
-
-- [Liquidsoap](https://www.liquidsoap.info/) for providing the powerful streaming toolkit
-- Various internet radio stations for testing
+- [FFmpeg](https://ffmpeg.org/)
+- [PulseAudio](https://www.freedesktop.org/wiki/Software/PulseAudio/)
+- [PipeWire](https://pipewire.org/)
+- Various internet radio stations for testing 

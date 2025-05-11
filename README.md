@@ -16,6 +16,7 @@ A Python-based toolkit for monitoring and analyzing audio streams in real-time, 
 - 🎵 Robust extraction and display of audio properties (codec, bitrate, sample rate, channels)
 - 💾 Audio properties persist across restarts and are always displayed as "last known" if not currently available
 - 🗂️ JSON structure is designed for easy integration and historical tracking
+- 🗒️ **Basic file-based logging in silent mode:** Each stream logs to its own file (e.g., `groovesalad-256-mp3.log`) for easier debugging and monitoring.
 
 ## Usage
 
@@ -44,6 +45,19 @@ python3 stream_metadata.py <stream_url> --stream_id <your_id>
 - `--debug` : Enable debug output
 
 If no feature flags are specified, all features are enabled by default.
+
+### Running Multiple Streams in Parallel (with nohup)
+
+To monitor multiple streams at once in silent mode, use `nohup` to run each instance in the background. Each will write its own JSON and log file:
+
+```bash
+nohup python3 stream_metadata.py https://ice6.somafm.com/groovesalad-256-mp3 --silent &
+nohup python3 stream_metadata.py https://rfcm.streamguys1.com/00hits-mp3 --silent &
+nohup python3 stream_metadata.py https://rfcm.streamguys1.com/todayhitspremium-mp3 --silent &
+```
+
+- Each instance will create a `.json` and `.log` file named after the stream.
+- You can review the log files (e.g., `tail -f groovesalad-256-mp3.log`) for status and debugging.
 
 ## JSON Structure
 
@@ -134,6 +148,7 @@ cd stream-metadata-monitor
 - The JSON file for each stream contains the current metadata and the last 10 events in `metadata.history`.
 - Ad events are logged and displayed just like songs.
 - Audio properties are always available under `stream.audio_properties` and persist across restarts.
+- Each stream instance in silent mode logs to its own file for easier debugging.
 
 ## Troubleshooting
 - If you see no metadata, try a different stream URL.

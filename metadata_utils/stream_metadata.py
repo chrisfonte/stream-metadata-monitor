@@ -86,8 +86,6 @@ class StreamMetadata:
         # Initialize JSON with startup info
         startup_info = {
             'started': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stream_url': self.stream_url,
-            'stream_id': self.stream_id,
             'connection_status': self.connection_status,
             'flags': {
                 'audio_monitor': ENABLE_AUDIO_MONITOR,
@@ -101,8 +99,14 @@ class StreamMetadata:
         # Initialize JSON with preserved history and current
         data = {
             'server': startup_info,
-            'current': None,
-            'history': existing_history  # Preserve existing history
+            'stream': {
+                'url': self.stream_url,
+                'id': self.stream_id
+            },
+            'metadata': {
+                'current': None,
+                'history': existing_history  # Preserve existing history
+            }
         }
         self.write_json(data)
 
@@ -175,43 +179,31 @@ class StreamMetadata:
     def write_json_with_history(self, metadata: Dict) -> None:
         try:
             data = self.read_json() or {}
-            history = data.get('history', [])
+            history = data.get('metadata', {}).get('history', [])
+            
+            # Create a simplified version for history without technical details
             history_metadata = {
                 'timestamp': metadata['timestamp'],
-                'stream_url': metadata['stream_url'],
-                'stream_id': metadata['stream_id'],
                 'type': metadata['type'],
                 'title': metadata['title'],
                 'artist': metadata['artist']
             }
-            if not history or (history[-1]['title'] != history_metadata['title'] or \
+            
+            # Add new metadata to history if it's different from the last entry
+            if not history or (history[-1]['title'] != history_metadata['title'] or 
                              history[-1]['artist'] != history_metadata['artist']):
                 history.append(history_metadata)
+            
+            # Keep only last 10 entries
             history = history[-10:]
-            if 'server' not in data:
-                data['server'] = {}
-            valid_audio = all(
-                v and v != 'unknown' for v in [self.codec, self.sample_rate, self.bitrate, self.channels]
-            )
-            if hasattr(self, 'audio_info_locked') and self.audio_info_locked and valid_audio:
-                self.audio_properties = {
-                    'codec': self.codec,
-                    'sample_rate': self.sample_rate,  # Store as integer
-                    'bitrate': self.bitrate,
-                    'channels': self.channels
-                }
-            if self.audio_properties:
-                data['server']['audio_properties'] = self.audio_properties
-            event_metadata = {
-                'timestamp': metadata['timestamp'],
-                'stream_url': metadata['stream_url'],
-                'stream_id': metadata['stream_id'],
-                'type': metadata['type'],
-                'title': metadata['title'],
-                'artist': metadata['artist']
-            }
-            data['current'] = event_metadata
-            data['history'] = history
+            
+            # Update data
+            if 'metadata' not in data:
+                data['metadata'] = {}
+            data['metadata']['history'] = history
+            data['metadata']['current'] = metadata  # Keep full metadata in current
+            
+            # Write back to file
             with open(self.json_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
@@ -242,8 +234,6 @@ class StreamMetadata:
 
         complete_metadata = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stream_url': self.stream_url,
-            'stream_id': self.stream_id,
             'type': current_type,
             'title': current_title,
             'artist': current_artist
@@ -264,6 +254,7 @@ class StreamMetadata:
     def display_metadata(self, metadata: Dict) -> None:
         data = self.read_json() or {}
         server = data.get('server', {})
+        stream = data.get('stream', {})
         audio_props = server.get('audio_properties', {})
         def show_bitrate(value, last_known_value):
             def fmt(val):
@@ -286,8 +277,8 @@ class StreamMetadata:
             return f"{label}: unknown"
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
-        print(f"   URL: {metadata['stream_url']}")
-        print(f"   ID: {metadata['stream_id']}")
+        print(f"   URL: {stream.get('url', 'unknown')}")
+        print(f"   ID: {stream.get('id', 'unknown')}")
         print(f"\U0001F3A7 Audio:")
         print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
         print(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
@@ -328,8 +319,7 @@ class StreamMetadata:
             print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
 
         # Display history, excluding the currently playing event
-        data = self.read_json() or {}
-        history = data.get('history', [])
+        history = data.get('metadata', {}).get('history', [])
         filtered_history = [event for event in history if not (
             event['artist'] == metadata['artist'] and event['title'] == metadata['title']
         )]
@@ -464,8 +454,6 @@ class StreamMetadata:
                     if not self.last_metadata:
                         minimal_metadata = {
                             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'stream_url': self.stream_url,
-                            'stream_id': self.stream_id,
                             'type': 'unknown',
                             'title': '',
                             'artist': '',
@@ -675,6 +663,8 @@ class StreamMetadata:
         try:
             with open(self.json_path, 'r+') as f:
                 data = json.load(f)
+                if 'server' not in data:
+                    data['server'] = {}
                 data['server']['connection_status'] = status
                 f.seek(0)
                 json.dump(data, f, indent=2)

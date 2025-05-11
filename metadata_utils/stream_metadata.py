@@ -169,11 +169,10 @@ class StreamMetadata:
 
     def write_json_with_history(self, metadata: Dict) -> None:
         try:
-            # Read existing data
             data = self.read_json() or {}
             history = data.get('history', [])
-            
-            # Create a simplified version for history without technical details
+
+            # Only event metadata for history
             history_metadata = {
                 'timestamp': metadata['timestamp'],
                 'stream_url': metadata['stream_url'],
@@ -182,20 +181,32 @@ class StreamMetadata:
                 'title': metadata['title'],
                 'artist': metadata['artist']
             }
-            
-            # Add new metadata to history if it's different from the last entry
-            if not history or (history[-1]['title'] != history_metadata['title'] or 
+            if not history or (history[-1]['title'] != history_metadata['title'] or \
                              history[-1]['artist'] != history_metadata['artist']):
                 history.append(history_metadata)
-            
-            # Keep only last 10 entries
             history = history[-10:]
-            
-            # Update data
+
+            # Update server audio properties
+            if 'server' not in data:
+                data['server'] = {}
+            data['server'].update({
+                'codec': self.codec,
+                'sample_rate': self.sample_rate,
+                'bitrate': self.bitrate,
+                'channels': self.channels
+            })
+
+            # Only event metadata for current
+            event_metadata = {
+                'timestamp': metadata['timestamp'],
+                'stream_url': metadata['stream_url'],
+                'stream_id': metadata['stream_id'],
+                'type': metadata['type'],
+                'title': metadata['title'],
+                'artist': metadata['artist']
+            }
+            data['current'] = event_metadata
             data['history'] = history
-            data['current'] = metadata  # Keep full metadata in current
-            
-            # Write back to file
             with open(self.json_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
@@ -203,31 +214,27 @@ class StreamMetadata:
 
     def process_metadata(self, metadata: Dict) -> None:
         """Process metadata and update JSON, regardless of display settings"""
-        # Always parse and overwrite artist/title
         title_info = self.parse_title(metadata.get('title', ''))
         metadata['artist'] = title_info.get('artist', '')
         metadata['title'] = title_info.get('title', '')
         current_artist = metadata['artist']
         current_title = metadata['title']
-        # Set type based on adw_ad field
         current_type = 'ad' if metadata.get('adw_ad') else 'song'
         metadata['type'] = current_type
-        
-        # Create a unique key for this metadata
         current_key = f"{current_artist}|{current_title}|{current_type}"
         last_key = f"{self.last_artist}|{self.last_title}|{self.last_type}"
-        
-        # Skip if metadata hasn't changed
-        if current_key == last_key and current_key:  # Only skip if we have actual metadata
+
+        # Always process the very first metadata event after launch
+        if not hasattr(self, 'has_seen_first_metadata'):
+            self.has_seen_first_metadata = True
+        elif current_key == last_key and current_key:
             return
 
-        # Update last seen metadata
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
         self.last_title = current_title
         self.last_type = current_type
 
-        # Create complete metadata dictionary with all required fields
         complete_metadata = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stream_url': self.stream_url,
@@ -236,20 +243,7 @@ class StreamMetadata:
             'title': current_title,
             'artist': current_artist
         }
-
-        # Add audio properties only if they exist
-        if hasattr(self, 'codec'):
-            complete_metadata.update({
-                'codec': self.codec,
-                'sample_rate': self.sample_rate,
-                'bitrate': self.bitrate,
-                'channels': self.channels
-            })
-
-        # Add any additional metadata fields
         complete_metadata.update(metadata)
-
-        # Add audio metrics if available and enabled
         if ENABLE_AUDIO_METRICS:
             with self.audio_metrics_lock:
                 complete_metadata.update({
@@ -258,30 +252,22 @@ class StreamMetadata:
                     'true_peak_db': self.audio_metrics['true_peak_db'],
                     'loudness_range_lu': self.audio_metrics['loudness_range_lu']
                 })
-
-        # Only display/write if audio info is ready
-        if not self.audio_info_ready:
-            return
-
-        # Always write to JSON
         self.write_json_with_history(complete_metadata)
-
-        # Only display if not in silent mode
         if not args.silent:
             self.display_metadata(complete_metadata)
 
     def display_metadata(self, metadata: Dict) -> None:
-        """Display metadata if enabled"""
+        data = self.read_json() or {}
+        server = data.get('server', {})
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
         print(f"   URL: {metadata['stream_url']}")
         print(f"   ID: {metadata['stream_id']}")
-        if hasattr(self, 'codec'):
-            print(f"\U0001F3A7 Audio:")
-            print(f"   Codec: {self.format_codec_display(metadata['codec'])}")
-            print(f"   Bitrate: {metadata['bitrate']}")
-            print(f"   Sample Rate: {self.format_sample_rate(metadata['sample_rate'])}")
-            print(f"   Channels: {metadata['channels']}")
+        print(f"\U0001F3A7 Audio:")
+        print(f"   Codec: {self.format_codec_display(server.get('codec', 'unknown'))}")
+        print(f"   Bitrate: {server.get('bitrate', 'unknown')}")
+        print(f"   Sample Rate: {self.format_sample_rate(server.get('sample_rate', 'unknown'))}")
+        print(f"   Channels: {server.get('channels', 'unknown')}")
         if metadata.get('type') == 'ad':
             print("\U0001F4E2 Now Playing (ad):")
         else:
@@ -445,15 +431,11 @@ class StreamMetadata:
             waited = 0
             while not self.stop_flag.is_set():
                 if self.audio_info_ready and not self.audio_levels_displayed:
-                    # Wait up to 5 seconds for a metadata event
                     for _ in range(50):
                         if self.last_metadata:
                             break
                         time.sleep(0.1)
-                        waited += 0.1
-                    # If still no metadata, force update
                     if not self.last_metadata:
-                        # Create a minimal metadata dict
                         minimal_metadata = {
                             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                             'stream_url': self.stream_url,
@@ -466,7 +448,10 @@ class StreamMetadata:
                             'bitrate': self.bitrate,
                             'channels': self.channels
                         }
-                        self.process_metadata(minimal_metadata)
+                        self.last_metadata = minimal_metadata.copy()
+                        self.write_json_with_history(minimal_metadata)
+                        if not args.silent:
+                            self.display_metadata(minimal_metadata)
                     self.audio_levels_displayed = True
                 time.sleep(0.1)
         except Exception as e:

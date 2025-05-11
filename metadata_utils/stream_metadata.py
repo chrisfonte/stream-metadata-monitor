@@ -76,7 +76,7 @@ class StreamMetadata:
 
         # Initialize JSON with startup info
         startup_info = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'started': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'stream_url': self.stream_url,
             'stream_id': self.stream_id,
             'connection_status': self.connection_status,
@@ -91,7 +91,7 @@ class StreamMetadata:
         }
         # Initialize JSON with preserved history and current
         data = {
-            'startup': startup_info,
+            'server': startup_info,
             'current': None,
             'history': existing_history  # Preserve existing history
         }
@@ -172,7 +172,7 @@ class StreamMetadata:
             # Create a simplified version for history without technical details
             history_metadata = {
                 'timestamp': metadata['timestamp'],
-                'stream': metadata['stream'],
+                'stream_url': metadata['stream_url'],
                 'stream_id': metadata['stream_id'],
                 'type': metadata['type'],
                 'title': metadata['title'],
@@ -226,7 +226,7 @@ class StreamMetadata:
         # Create complete metadata dictionary with all required fields
         complete_metadata = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'stream': self.stream_url,
+            'stream_url': self.stream_url,
             'stream_id': self.stream_id,
             'type': current_type,
             'title': current_title,
@@ -266,8 +266,8 @@ class StreamMetadata:
         """Display metadata if enabled"""
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
-        print(f"   URL: {self.stream_url}")
-        print(f"   ID: {self.stream_id}")
+        print(f"   URL: {metadata['stream_url']}")
+        print(f"   ID: {metadata['stream_id']}")
         if hasattr(self, 'codec'):
             print(f"\U0001F3A7 Audio:")
             print(f"   Codec: {self.format_codec_display(metadata['codec'])}")
@@ -283,7 +283,7 @@ class StreamMetadata:
 
         # Show all other fields except special fields, artist, title
         for k, v in metadata.items():
-            if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream', 'stream_id',
+            if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream_url', 'stream_id',
                     'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu',
                     'artist', 'title', 'type', 'codec', 'sample_rate', 'bitrate', 'channels'):
                 continue
@@ -464,7 +464,7 @@ class StreamMetadata:
                     logging.error("Stream/network error: Could not open stream URL. Please check the stream address and your network connection.")
                     with open(self.json_path, 'r+') as f:
                         data = json.load(f)
-                        data['startup']['connection_status'] = "failed"
+                        data['server']['connection_status'] = "failed"
                         f.seek(0)
                         json.dump(data, f, indent=2)
                         f.truncate()
@@ -473,7 +473,7 @@ class StreamMetadata:
                     logging.error(f"FFmpeg failed to start, return code: {self.metadata_process.returncode}")
                     with open(self.json_path, 'r+') as f:
                         data = json.load(f)
-                        data['startup']['connection_status'] = "failed"
+                        data['server']['connection_status'] = "failed"
                         f.seek(0)
                         json.dump(data, f, indent=2)
                         f.truncate()
@@ -496,7 +496,7 @@ class StreamMetadata:
                     metadata_detected = True
                     with open(self.json_path, 'r+') as f:
                         data = json.load(f)
-                        data['startup']['connection_status'] = "connected"
+                        data['server']['connection_status'] = "connected"
                         f.seek(0)
                         json.dump(data, f, indent=2)
                         f.truncate()
@@ -506,7 +506,7 @@ class StreamMetadata:
             if not metadata_detected:
                 with open(self.json_path, 'r+') as f:
                     data = json.load(f)
-                    data['startup']['connection_status'] = "failed"
+                    data['server']['connection_status'] = "failed"
                     f.seek(0)
                     json.dump(data, f, indent=2)
                     f.truncate()
@@ -617,12 +617,54 @@ class StreamMetadata:
         try:
             with open(self.json_path, 'r+') as f:
                 data = json.load(f)
-                data['startup']['connection_status'] = status
+                data['server']['connection_status'] = status
                 f.seek(0)
                 json.dump(data, f, indent=2)
                 f.truncate()
         except Exception as e:
             logging.error(f"Error updating connection status: {e}")
+
+    def run_ffmpeg_audio_monitor(self):
+        """Run FFmpeg to monitor audio levels and optionally play audio"""
+        try:
+            cmd = [
+                'ffmpeg',
+                '-hide_banner',
+                '-loglevel', 'error',
+                '-headers', 'Icy-MetaData: 1\r\nIcy-MetaInt: 16000',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-i', self.stream_url,
+                '-f', 'f32le',  # Use float32 PCM for audio analysis
+                '-ar', '44100',  # Sample rate
+                '-ac', '2',      # Stereo
+                '-'
+            ]
+            if NO_BUFFER:
+                cmd[1:1] = ['-fflags', 'nobuffer']
+
+            # If audio monitor is enabled, pipe to PulseAudio
+            if ENABLE_AUDIO_MONITOR:
+                cmd.extend([
+                    '-f', 'pulse',
+                    '-i', 'pipe:0',
+                    '-f', 'pulse',
+                    'default'
+                ])
+
+            self.ffmpeg_audio_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE if ENABLE_AUDIO_MONITOR else None
+            )
+
+            # Wait for process to complete
+            self.ffmpeg_audio_process.wait()
+        except Exception as e:
+            logging.error(f"Error running audio monitor: {e}")
+            self.stop_flag.set()
 
 
 if __name__ == "__main__":

@@ -38,10 +38,12 @@ class StreamMetadata:
         if stream_id:
             self.stream_id = stream_id
             self.json_path = f"{self.stream_id}.json"
+            self.log_path = f"{self.stream_id}.log"
         else:
             # Use the mount name for the JSON filename
             mount = self.stream_url.split('/')[-1]
             self.json_path = f"{mount}.json"
+            self.log_path = f"{mount}.log"
             self.stream_id = None  # Do not set stream_id if not provided
         self.ffmpeg_audio_process: Optional[subprocess.Popen] = None
         self.metadata_process: Optional[subprocess.Popen] = None
@@ -109,6 +111,16 @@ class StreamMetadata:
             }
         }
         self.write_json(data)
+
+        # Set up file-based logging in silent mode
+        if '--silent' in sys.argv:
+            file_handler = logging.FileHandler(self.log_path)
+            formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
+            file_handler.setFormatter(formatter)
+            file_handler.setLevel(logging.INFO)
+            root_logger = logging.getLogger()
+            root_logger.addHandler(file_handler)
+            root_logger.setLevel(logging.INFO)
 
     def generate_stream_id(self):
         # Generate NA followed by 4 random digits

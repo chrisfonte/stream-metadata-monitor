@@ -71,6 +71,11 @@ class StreamMetadata:
         self.audio_info_ready = False  # New flag to track first update
         self.audio_info_locked = False  # New flag to lock in real codec info
 
+        # Read last known audio properties from JSON at startup
+        existing_data = self.read_json() or {}
+        server_section = existing_data.get('server', {})
+        self.audio_properties = server_section.get('audio_properties', {}).copy() if 'audio_properties' in server_section else {}
+
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
 
@@ -186,15 +191,22 @@ class StreamMetadata:
                 history.append(history_metadata)
             history = history[-10:]
 
-            # Update server audio properties
+            # Only update audio_properties if all values are not 'unknown'
             if 'server' not in data:
                 data['server'] = {}
-            data['server'].update({
-                'codec': self.codec,
-                'sample_rate': self.sample_rate,
-                'bitrate': self.bitrate,
-                'channels': self.channels
-            })
+            valid_audio = all(
+                v and v != 'unknown' for v in [self.codec, self.sample_rate, self.bitrate, self.channels]
+            )
+            if hasattr(self, 'audio_info_locked') and self.audio_info_locked and valid_audio:
+                self.audio_properties = {
+                    'codec': self.codec,
+                    'sample_rate': self.sample_rate,
+                    'bitrate': self.bitrate,
+                    'channels': self.channels
+                }
+            # Always write the current value of self.audio_properties
+            if self.audio_properties:
+                data['server']['audio_properties'] = self.audio_properties
 
             # Only event metadata for current
             event_metadata = {
@@ -259,15 +271,22 @@ class StreamMetadata:
     def display_metadata(self, metadata: Dict) -> None:
         data = self.read_json() or {}
         server = data.get('server', {})
+        audio_props = server.get('audio_properties', {})
+        def show_prop(label, value, last_known_value):
+            if value and value != 'unknown':
+                return f"{label}: {value}"
+            elif last_known_value and last_known_value != 'unknown':
+                return f"{label}: {last_known_value} (last known)"
+            return f"{label}: unknown"
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
         print(f"   URL: {metadata['stream_url']}")
         print(f"   ID: {metadata['stream_id']}")
         print(f"\U0001F3A7 Audio:")
-        print(f"   Codec: {self.format_codec_display(server.get('codec', 'unknown'))}")
-        print(f"   Bitrate: {server.get('bitrate', 'unknown')}")
-        print(f"   Sample Rate: {self.format_sample_rate(server.get('sample_rate', 'unknown'))}")
-        print(f"   Channels: {server.get('channels', 'unknown')}")
+        print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
+        print(f"   {show_prop('Bitrate', self.bitrate, audio_props.get('bitrate', 'unknown'))}")
+        print(f"   {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
+        print(f"   {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
         if metadata.get('type') == 'ad':
             print("\U0001F4E2 Now Playing (ad):")
         else:

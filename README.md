@@ -29,7 +29,7 @@ python3 stream_metadata.py
 
 ### Monitor a Custom Stream
 ```bash
-python3 stream_metadata.py "https://ice1.somafm.com/groovesalad-256-mp3"
+python3 stream_metadata.py "https://ice6.somafm.com/groovesalad-256-mp3"
 ```
 
 ### Specify a Stream ID
@@ -52,8 +52,8 @@ To monitor multiple streams at once in silent mode, use `nohup` to run each inst
 
 ```bash
 nohup python3 stream_metadata.py https://ice6.somafm.com/groovesalad-256-mp3 --silent &
-nohup python3 stream_metadata.py https://rfcm.streamguys1.com/00hits-mp3 --silent &
-nohup python3 stream_metadata.py https://rfcm.streamguys1.com/todayhitspremium-mp3 --silent &
+nohup python3 stream_metadata.py https://ice6.somafm.com/gsclassic-128-mp3 --silent &
+nohup python3 stream_metadata.py https://ice6.somafm.com/dronezone-256-mp3 --silent &
 ```
 
 - Each instance will create a `.json` and `.log` file named after the stream.

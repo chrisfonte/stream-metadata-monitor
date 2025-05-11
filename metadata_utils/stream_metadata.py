@@ -57,6 +57,7 @@ class StreamMetadata:
         self.sample_rate = "unknown"  # Will be set by icy-audio-info
         self.bitrate = "unknown"  # Will be set by icy-audio-info
         self.channels = "unknown"  # Will be set by icy-audio-info
+        self.format = None  # Added for decoded format
 
         self.audio_metrics = {
             "integrated_lufs": None,
@@ -67,6 +68,8 @@ class StreamMetadata:
         self.audio_metrics_lock = threading.Lock()
         self.threads: list[threading.Thread] = []
         self.audio_levels_displayed = False  # Track if valid audio levels have been shown
+        self.audio_info_ready = False  # New flag to track first update
+        self.audio_info_locked = False  # New flag to lock in real codec info
 
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
@@ -256,6 +259,10 @@ class StreamMetadata:
                     'loudness_range_lu': self.audio_metrics['loudness_range_lu']
                 })
 
+        # Only display/write if audio info is ready
+        if not self.audio_info_ready:
+            return
+
         # Always write to JSON
         self.write_json_with_history(complete_metadata)
 
@@ -272,8 +279,8 @@ class StreamMetadata:
         if hasattr(self, 'codec'):
             print(f"\U0001F3A7 Audio:")
             print(f"   Codec: {self.format_codec_display(metadata['codec'])}")
-            print(f"   Sample Rate: {self.format_sample_rate(metadata['sample_rate'])}")
             print(f"   Bitrate: {metadata['bitrate']}")
+            print(f"   Sample Rate: {self.format_sample_rate(metadata['sample_rate'])}")
             print(f"   Channels: {metadata['channels']}")
         if metadata.get('type') == 'ad':
             print("\U0001F4E2 Now Playing (ad):")
@@ -348,61 +355,64 @@ class StreamMetadata:
             return rate
 
     def parse_ffmpeg_audio_stream_info(self, line: str):
-        """Parse audio stream info from FFmpeg output"""
+        """Parse codec, sample rate, channels, and bitrate from the 'Stream #0:0' line in FFmpeg output. Only set from first real codec (not PCM)."""
         try:
-            # Look for codec info - specifically MP3 or AAC
-            codec_match = re.search(r'Audio: (\w+)', line)
-            if codec_match:
-                codec = codec_match.group(1).lower()
-                if codec in ('mp3', 'aac'):
-                    self.codec = codec
-                else:
-                    self.codec = "unknown"
-            
-            # Look for sample rate
-            rate_match = re.search(r'(\d+) Hz', line)
-            if rate_match:
-                self.sample_rate = rate_match.group(1)
-            
-            # Look for channels - specifically mono or stereo
-            channels_match = re.search(r'(\d+) channels', line)
-            if channels_match:
-                num_channels = int(channels_match.group(1))
-                self.channels = "stereo" if num_channels == 2 else "mono"
-            
-            # Look for bitrate - specifically in kbps
-            bitrate_match = re.search(r'(\d+) kb/s', line)
-            if bitrate_match:
-                bitrate = int(bitrate_match.group(1))
-                if bitrate > 1000:  # If over 1000 kbps, it's probably a CD bitrate
-                    self.bitrate = "unknown"
-                else:
-                    self.bitrate = f"{bitrate} kbps"
+            if 'Stream #0:0' in line and 'Audio:' in line and not self.audio_info_locked:
+                parts = line.split('Audio:')[-1].split(',')
+                if len(parts) >= 5:
+                    codec = parts[0].strip().lower()
+                    # Only set if codec is not PCM/decoded
+                    if codec not in ("pcm_s16le", "pcm_f32le", "pcm_s24le", "pcm_s32le", "fltp", "s16p", "s32p"):
+                        self.codec = codec
+                        self.sample_rate = parts[1].strip().replace('Hz', '').strip()
+                        self.channels = parts[2].strip().lower()
+                        for part in parts:
+                            if 'kb/s' in part:
+                                try:
+                                    bitrate = int(part.strip().split(' ')[0])
+                                    self.bitrate = f"{bitrate} Kbps" if bitrate < 1000 else "unknown"
+                                    break
+                                except Exception:
+                                    continue
+                        self.audio_info_ready = True
+                        self.audio_info_locked = True  # Lock in after first real codec
+                        if not args.silent:
+                            logging.debug(f"FFmpeg parsed: codec={self.codec}, sample_rate={self.sample_rate}, channels={self.channels}, bitrate={self.bitrate}")
+                return
         except Exception as e:
             logging.error(f"Error parsing FFmpeg audio info: {e}")
 
     def parse_icy_audio_info(self, line: str):
-        """Parse ICY audio info"""
+        """Parse ICY audio info (fallback only, do not error if missing)"""
         try:
-            # Look for sample rate
-            rate_match = re.search(r'(\d+) Hz', line)
-            if rate_match:
-                self.sample_rate = rate_match.group(1)
-            
-            # Look for bitrate - specifically in kbps
-            bitrate_match = re.search(r'(\d+) kbps', line)
-            if bitrate_match:
-                bitrate = int(bitrate_match.group(1))
-                if bitrate > 1000:  # If over 1000 kbps, it's probably a CD bitrate
+            if 'icy-audio-info' in line:
+                info = line.split(':', 1)[1].strip()
+                pairs = info.split(';')
+                for pair in pairs:
+                    if '=' not in pair:
+                        continue
+                    key, value = pair.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key == 'ice-samplerate' and self.sample_rate == "unknown":
+                        self.sample_rate = value
+                    elif key == 'ice-bitrate' and self.bitrate == "unknown":
+                        bitrate = int(value)
+                        if bitrate > 1000:
+                            self.bitrate = "unknown"
+                        else:
+                            self.bitrate = f"{bitrate} Kbps"
+                    elif key == 'ice-channels' and self.channels == "unknown":
+                        num_channels = int(value)
+                        self.channels = "stereo" if num_channels == 2 else "mono"
+                    self.audio_info_ready = True  # Set flag after first update
+            if 'icy-br' in line and self.bitrate == "unknown":
+                bitrate = int(line.split(':', 1)[1].strip())
+                if bitrate > 1000:
                     self.bitrate = "unknown"
                 else:
-                    self.bitrate = f"{bitrate} kbps"
-            
-            # Look for channels - specifically mono or stereo
-            channels_match = re.search(r'(\d+) channels', line)
-            if channels_match:
-                num_channels = int(channels_match.group(1))
-                self.channels = "stereo" if num_channels == 2 else "mono"
+                    self.bitrate = f"{bitrate} Kbps"
+                self.audio_info_ready = True
         except Exception as e:
             logging.error(f"Error parsing ICY audio info: {e}")
 
@@ -431,7 +441,33 @@ class StreamMetadata:
                 self.threads.append(t2)
                 t2.start()
 
+            # Wait for audio info to be ready, then force update if no metadata event
+            waited = 0
             while not self.stop_flag.is_set():
+                if self.audio_info_ready and not self.audio_levels_displayed:
+                    # Wait up to 5 seconds for a metadata event
+                    for _ in range(50):
+                        if self.last_metadata:
+                            break
+                        time.sleep(0.1)
+                        waited += 0.1
+                    # If still no metadata, force update
+                    if not self.last_metadata:
+                        # Create a minimal metadata dict
+                        minimal_metadata = {
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'stream_url': self.stream_url,
+                            'stream_id': self.stream_id,
+                            'type': 'unknown',
+                            'title': '',
+                            'artist': '',
+                            'codec': self.codec,
+                            'sample_rate': self.sample_rate,
+                            'bitrate': self.bitrate,
+                            'channels': self.channels
+                        }
+                        self.process_metadata(minimal_metadata)
+                    self.audio_levels_displayed = True
                 time.sleep(0.1)
         except Exception as e:
             logging.error(f"Runtime error in main loop: {e}")
@@ -535,12 +571,12 @@ class StreamMetadata:
                     logging.debug(f"FFmpeg: {line}")
 
                 # Try to parse audio info from FFmpeg output
-                if 'Audio:' in line:
+                if any(pattern in line for pattern in ['Audio:', 'Stream #0:0', 'Stream #0:1']):
                     self.parse_ffmpeg_audio_stream_info(line)
                     self.update_connection_status("connected")  # We got audio info, definitely connected
 
                 # Handle icy-audio-info
-                if 'icy-audio-info:' in line:
+                if any(pattern in line for pattern in ['icy-audio-info', 'icy-br']):
                     self.parse_icy_audio_info(line)
                     self.update_connection_status("connected")  # We got icy info, definitely connected
                     continue

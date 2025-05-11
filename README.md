@@ -13,6 +13,9 @@ A Python-based toolkit for monitoring and analyzing audio streams in real-time, 
 - 🔄 Automatic reconnection to streams
 - 🎛️ Configurable via command-line arguments
 - 📝 In-JSON event history: last 10 events (songs/ads) stored in the main JSON file
+- 🎵 Robust extraction and display of audio properties (codec, bitrate, sample rate, channels)
+- 💾 Audio properties persist across restarts and are always displayed as "last known" if not currently available
+- 🗂️ JSON structure is designed for easy integration and historical tracking
 
 ## Usage
 
@@ -42,25 +45,67 @@ python3 stream_metadata.py <stream_url> --stream_id <your_id>
 
 If no feature flags are specified, all features are enabled by default.
 
+## JSON Structure
+
+Each stream creates a JSON file with the following structure:
+
+```json
+{
+  "server": {
+    "started": "...",
+    "connection_status": "...",
+    "flags": { ... }
+  },
+  "stream": {
+    "url": "...",
+    "id": "...",
+    "audio_properties": {
+      "codec": "mp3",
+      "sample_rate": 44100,
+      "bitrate": 256,
+      "channels": "stereo"
+    }
+  },
+  "metadata": {
+    "current": {
+      "timestamp": "...",
+      "type": "song",
+      "title": "...",
+      "artist": "..."
+    },
+    "history": [
+      {
+        "timestamp": "...",
+        "type": "song",
+        "title": "...",
+        "artist": "..."
+      }
+      // ... up to 10 entries
+    ]
+  }
+}
+```
+- **Note:** Audio properties are only stored under `stream.audio_properties`, never under `metadata.current` or `metadata.history`.
+
 ## Event History
-- The last 10 events (songs and ads) are stored in the main JSON file under the `history` field.
+- The last 10 events (songs and ads) are stored in the main JSON file under the `metadata.history` field.
 - Each event includes its own timestamp, artist, and title.
 - The history is displayed below the current playing info, excluding the currently playing event.
 
 ## Example Output
 ```
 [2025-05-09 16:42:36]
-Stream: https://example.com/your-stream.mp3
-Stream ID: NA4439
-🎵 Now Playing:
+Stream:
+   URL: https://example.com/your-stream.mp3
+   ID: NA4439
+🎧 Audio:
+   Codec: MP3
+   Bitrate: 256 Kbps
+   Sample Rate: 44.1 kHz
+   Channels: stereo
+🎵 Now Playing (song):
    Artist: Kenny G.
    Title: Japan
-   Type: aac
-📊 Audio Levels:
-   Integrated LUFS: N/A
-   Short-term LUFS: N/A
-   True Peak: N/A
-   Loudness Range: N/A
 
 History (last 10):
   [2025-05-09 16:41:12] John Mayer - No Such Thing (Acoustic)
@@ -86,8 +131,9 @@ cd stream-metadata-monitor
 ## Advanced Usage
 
 - The script is modular and can be extended for integration with other tools.
-- The JSON file for each stream contains the current metadata and the last 10 events in `history`.
+- The JSON file for each stream contains the current metadata and the last 10 events in `metadata.history`.
 - Ad events are logged and displayed just like songs.
+- Audio properties are always available under `stream.audio_properties` and persist across restarts.
 
 ## Troubleshooting
 - If you see no metadata, try a different stream URL.

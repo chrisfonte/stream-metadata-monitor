@@ -73,8 +73,8 @@ class StreamMetadata:
 
         # Read last known audio properties from JSON at startup
         existing_data = self.read_json() or {}
-        server_section = existing_data.get('server', {})
-        self.audio_properties = server_section.get('audio_properties', {}).copy() if 'audio_properties' in server_section else {}
+        stream_section = existing_data.get('stream', {})
+        self.audio_properties = stream_section.get('audio_properties', {}).copy() if 'audio_properties' in stream_section else {}
 
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
@@ -203,6 +203,21 @@ class StreamMetadata:
             data['metadata']['history'] = history
             data['metadata']['current'] = metadata  # Keep full metadata in current
             
+            # Store audio_properties under stream
+            valid_audio = all(
+                v and v != 'unknown' for v in [self.codec, self.sample_rate, self.bitrate, self.channels]
+            )
+            if hasattr(self, 'audio_info_locked') and self.audio_info_locked and valid_audio:
+                self.audio_properties = {
+                    'codec': self.codec,
+                    'sample_rate': self.sample_rate,  # Store as integer
+                    'bitrate': self.bitrate,
+                    'channels': self.channels
+                }
+            if 'stream' not in data:
+                data['stream'] = {'url': self.stream_url, 'id': self.stream_id}
+            if self.audio_properties:
+                data['stream']['audio_properties'] = self.audio_properties
             # Write back to file
             with open(self.json_path, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -255,7 +270,7 @@ class StreamMetadata:
         data = self.read_json() or {}
         server = data.get('server', {})
         stream = data.get('stream', {})
-        audio_props = server.get('audio_properties', {})
+        audio_props = stream.get('audio_properties', {})
         def show_bitrate(value, last_known_value):
             def fmt(val):
                 if val and val != 'unknown':

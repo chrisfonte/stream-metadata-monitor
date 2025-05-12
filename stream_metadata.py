@@ -147,7 +147,9 @@ class StreamMetadata:
     def write_json_with_history(self, metadata: Dict) -> None:
         try:
             data = self.read_json() or {}
-            history = data.get('metadata', {}).get('history', [])
+            if 'metadata' not in data:
+                data['metadata'] = {}
+            history = data['metadata'].get('history', [])
             
             # Create a simplified version for history without technical details
             history_metadata = {
@@ -166,8 +168,6 @@ class StreamMetadata:
             history = history[-10:]
             
             # Update data
-            if 'metadata' not in data:
-                data['metadata'] = {}
             data['metadata']['history'] = history
             # Only store filtered metadata in current (no audio properties)
             filtered_metadata = {k: v for k, v in metadata.items() if k not in ('codec', 'sample_rate', 'bitrate', 'channels')}
@@ -189,8 +189,7 @@ class StreamMetadata:
             if self.audio_properties:
                 data['stream']['audio_properties'] = self.audio_properties
             # Write back to file
-            with open(self.json_path, 'w') as f:
-                json.dump(data, f, indent=2)
+            self.write_json(data)
         except Exception as e:
             logging.error(f"Error writing JSON with history: {e}")
 
@@ -308,12 +307,9 @@ class StreamMetadata:
 
         # Display history, excluding the currently playing event
         history = data.get('metadata', {}).get('history', [])
-        filtered_history = [event for event in history if not (
-            event['artist'] == metadata['artist'] and event['title'] == metadata['title']
-        )]
-        if filtered_history:
+        if history:
             print("\nHistory (last 10):")
-            for event in reversed(filtered_history):
+            for event in reversed(history):
                 if event.get('type') == 'song':
                     print(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
                 else:

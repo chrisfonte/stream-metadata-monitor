@@ -28,6 +28,7 @@ ENABLE_METADATA_MONITOR = False
 ENABLE_AUDIO_METRICS = False
 NO_BUFFER = False
 DEBUG_MODE = False
+TEST_MODE = False
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
@@ -286,6 +287,7 @@ class StreamMetadata:
         data = self.read_json() or {}
         server = data.get('server', {})
         stream = data.get('stream', {})
+        stream_url = self.stream_url
         audio_props = stream.get('audio_properties', {})
         def show_bitrate(value, last_known_value):
             def fmt(val):
@@ -308,7 +310,7 @@ class StreamMetadata:
             return f"{label}: unknown"
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
-        print(f"   URL: {stream.get('url', 'unknown')}")
+        print(f"   URL: {stream_url}")
         print(f"   ID: {stream.get('id', 'unknown')}")
         print(f"\U0001F3A7 Audio:")
         print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
@@ -449,7 +451,31 @@ class StreamMetadata:
         except Exception as e:
             logging.error(f"Error parsing ICY audio info: {e}")
 
+    def get_random_test_stream(self) -> str:
+        """Get a random stream URL from test_streams.txt"""
+        try:
+            with open('test_streams.txt', 'r') as f:
+                streams = [line.strip() for line in f if line.strip()]
+            if streams:
+                return random.choice(streams)
+        except Exception as e:
+            logging.error(f"Error reading test streams: {e}")
+        return "https://rfcm.streamguys1.com/00hits-mp3"  # Fallback to default
+
     def run(self):
+        if TEST_MODE:
+            self.stream_url = self.get_random_test_stream()
+            logging.info(f"Test mode: Using random stream URL: {self.stream_url}")
+            # Update the JSON file with the new stream URL
+            try:
+                data = self.read_json() or {}
+                if 'stream' not in data:
+                    data['stream'] = {}
+                data['stream']['url'] = self.stream_url
+                self.write_json(data)
+            except Exception as e:
+                logging.error(f"Error updating JSON with test stream URL: {e}")
+
         buffering_status = 'ENABLED' if NO_BUFFER else 'DISABLED'
         audio_monitor_status = 'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'
         metadata_status = 'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'
@@ -763,6 +789,8 @@ if __name__ == "__main__":
                       help='Enable debug output (FFmpeg loglevel debug, show FFmpeg command)')
     parser.add_argument('--silent', action='store_true',
                       help='Silent mode: no display, no audio, only write to JSON')
+    parser.add_argument('--test', action='store_true',
+                      help='Test mode: randomly select a stream from test_streams.txt')
     args = parser.parse_args()
 
     # Feature flags logic: if no feature flags are specified, enable all by default
@@ -778,6 +806,7 @@ if __name__ == "__main__":
         ENABLE_AUDIO_METRICS = args.audio_metrics
     NO_BUFFER = args.no_buffer
     DEBUG_MODE = args.debug and not args.silent  # Disable debug output in silent mode
+    TEST_MODE = args.test
 
     # In silent mode, disable logging output
     if args.silent:

@@ -17,6 +17,7 @@ A Python-based toolkit for monitoring and analyzing audio streams in real-time, 
 - 💾 Audio properties persist across restarts and are always displayed as "last known" if not currently available
 - 🗂️ JSON structure is designed for easy integration and historical tracking
 - 🗒️ **Basic file-based logging in silent mode:** Each stream logs to its own file (e.g., `groovesalad-256-mp3.log`) for easier debugging and monitoring.
+- 🎲 Test mode for randomly selecting streams from a test file
 
 ## Usage
 
@@ -31,6 +32,21 @@ python3 stream_metadata.py
 ```bash
 python3 stream_metadata.py "https://ice6.somafm.com/groovesalad-256-mp3"
 ```
+
+### Test Mode
+To test with random streams from a predefined list:
+```bash
+python3 stream_metadata.py --test
+```
+
+You'll need to create a `test_streams.txt` file in the same directory as the script, with one stream URL per line. For example:
+```
+https://stream1.example.com/stream1
+https://stream2.example.com/stream2
+https://stream3.example.com/stream3
+```
+
+Note: The `test_streams.txt` file should not be committed to version control as it may contain private or test-specific stream URLs.
 
 ### Specify a Stream ID
 ```bash

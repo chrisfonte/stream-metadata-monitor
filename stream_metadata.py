@@ -51,6 +51,7 @@ class StreamMetadata:
         self.bitrate = "unknown"  # Will be set by icy-audio-info
         self.channels = "unknown"  # Will be set by icy-audio-info
         self.format = None  # Added for decoded format
+        self.audio_properties = {}  # Initialize empty audio properties
 
         self.audio_metrics = {
             "integrated_lufs": None,
@@ -76,52 +77,6 @@ class StreamMetadata:
 
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
-
-        # Read last known audio properties from JSON at startup
-        existing_data = self.read_json() or {}
-        stream_section = existing_data.get('stream', {})
-        self.audio_properties = stream_section.get('audio_properties', {}).copy() if 'audio_properties' in stream_section else {}
-
-        # Read existing history if file exists
-        existing_data = self.read_json() or {}
-        existing_history = existing_data.get('history', [])
-
-        # Initialize JSON with startup info
-        startup_info = {
-            'started': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'connection_status': self.connection_status,
-            'flags': {
-                'audio_monitor': ENABLE_AUDIO_MONITOR,
-                'metadata_monitor': ENABLE_METADATA_MONITOR,
-                'audio_metrics': ENABLE_AUDIO_METRICS,
-                'no_buffer': NO_BUFFER,
-                'debug': DEBUG_MODE,
-                'silent': '--silent' in sys.argv
-            }
-        }
-        # Initialize JSON with preserved history and current
-        data = {
-            'server': startup_info,
-            'stream': {
-                'url': self.stream_url,
-                'id': self.stream_id
-            },
-            'metadata': {
-                'current': None,
-                'history': existing_history  # Preserve existing history
-            }
-        }
-        self.write_json(data)
-
-        # Set up file-based logging in silent mode
-        if '--silent' in sys.argv:
-            file_handler = logging.FileHandler(self.log_path)
-            formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
-            file_handler.setFormatter(formatter)
-            file_handler.setLevel(logging.INFO)
-            root_logger = logging.getLogger()
-            root_logger.addHandler(file_handler)
-            root_logger.setLevel(logging.INFO)
 
     def generate_stream_id(self):
         # Generate NA followed by 4 random digits
@@ -493,16 +448,27 @@ class StreamMetadata:
                 'silent': '--silent' in sys.argv
             }
         }
+
+        # Read existing history if file exists
+        existing_data = self.read_json() or {}
+        existing_history = existing_data.get('metadata', {}).get('history', [])
+        
+        # Read existing audio properties if available
+        stream_section = existing_data.get('stream', {})
+        if 'audio_properties' in stream_section:
+            self.audio_properties = stream_section['audio_properties'].copy()
+
         # Initialize JSON with preserved history and current
         data = {
             'server': startup_info,
             'stream': {
                 'url': self.stream_url,
-                'id': self.stream_id
+                'id': self.stream_id,
+                'audio_properties': self.audio_properties
             },
             'metadata': {
                 'current': None,
-                'history': []  # Start with empty history
+                'history': existing_history  # Preserve existing history
             }
         }
         self.write_json(data)

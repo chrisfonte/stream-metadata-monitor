@@ -34,18 +34,8 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(m
 
 
 class StreamMetadata:
-    def __init__(self, stream_url="https://rfcm.streamguys1.com/00hits-mp3", stream_id=None):
+    def __init__(self, stream_url=None, stream_id=None):
         self.stream_url = stream_url
-        if stream_id:
-            self.stream_id = stream_id
-            self.json_path = f"{self.stream_id}.json"
-            self.log_path = f"{self.stream_id}.log"
-        else:
-            # Use the mount name for the JSON filename
-            mount = self.stream_url.split('/')[-1]
-            self.json_path = f"{mount}.json"
-            self.log_path = f"{mount}.log"
-            self.stream_id = None  # Do not set stream_id if not provided
         self.ffmpeg_audio_process: Optional[subprocess.Popen] = None
         self.metadata_process: Optional[subprocess.Popen] = None
         self.stop_flag = threading.Event()
@@ -74,13 +64,23 @@ class StreamMetadata:
         self.audio_info_ready = False  # New flag to track first update
         self.audio_info_locked = False  # New flag to lock in real codec info
 
+        # Set up paths
+        if stream_id:
+            self.stream_id = stream_id
+            self.json_path = f"{self.stream_id}.json"
+            self.log_path = f"{self.stream_id}.log"
+        else:
+            self.stream_id = None
+            self.json_path = None
+            self.log_path = None
+
+        signal.signal(signal.SIGINT, self.handle_signal)
+        signal.signal(signal.SIGTERM, self.handle_signal)
+
         # Read last known audio properties from JSON at startup
         existing_data = self.read_json() or {}
         stream_section = existing_data.get('stream', {})
         self.audio_properties = stream_section.get('audio_properties', {}).copy() if 'audio_properties' in stream_section else {}
-
-        signal.signal(signal.SIGINT, self.handle_signal)
-        signal.signal(signal.SIGTERM, self.handle_signal)
 
         # Read existing history if file exists
         existing_data = self.read_json() or {}
@@ -466,15 +466,56 @@ class StreamMetadata:
         if TEST_MODE:
             self.stream_url = self.get_random_test_stream()
             logging.info(f"Test mode: Using random stream URL: {self.stream_url}")
-            # Update the JSON file with the new stream URL
-            try:
-                data = self.read_json() or {}
-                if 'stream' not in data:
-                    data['stream'] = {}
-                data['stream']['url'] = self.stream_url
-                self.write_json(data)
-            except Exception as e:
-                logging.error(f"Error updating JSON with test stream URL: {e}")
+            # Update paths based on new stream URL
+            mount = self.stream_url.split('/')[-1]
+            self.json_path = f"{mount}.json"
+            self.log_path = f"{mount}.log"
+            self.stream_id = mount  # Use mount as stream_id in test mode
+
+        if not self.stream_url:
+            logging.error("No stream URL provided and not in test mode")
+            return
+
+        if not self.json_path or not self.log_path:
+            logging.error("No valid paths for JSON/log files")
+            return
+
+        # Initialize JSON with startup info
+        startup_info = {
+            'started': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'connection_status': self.connection_status,
+            'flags': {
+                'audio_monitor': ENABLE_AUDIO_MONITOR,
+                'metadata_monitor': ENABLE_METADATA_MONITOR,
+                'audio_metrics': ENABLE_AUDIO_METRICS,
+                'no_buffer': NO_BUFFER,
+                'debug': DEBUG_MODE,
+                'silent': '--silent' in sys.argv
+            }
+        }
+        # Initialize JSON with preserved history and current
+        data = {
+            'server': startup_info,
+            'stream': {
+                'url': self.stream_url,
+                'id': self.stream_id
+            },
+            'metadata': {
+                'current': None,
+                'history': []  # Start with empty history
+            }
+        }
+        self.write_json(data)
+
+        # Set up file-based logging in silent mode
+        if '--silent' in sys.argv:
+            file_handler = logging.FileHandler(self.log_path)
+            formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
+            file_handler.setFormatter(formatter)
+            file_handler.setLevel(logging.INFO)
+            root_logger = logging.getLogger()
+            root_logger.addHandler(file_handler)
+            root_logger.setLevel(logging.INFO)
 
         buffering_status = 'ENABLED' if NO_BUFFER else 'DISABLED'
         audio_monitor_status = 'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'
@@ -773,8 +814,8 @@ class StreamMetadata:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stream Metadata Monitor - Modular features')
-    parser.add_argument('url', nargs='?', default="https://rfcm.streamguys1.com/00hits-mp3",
-                      help='URL of the stream to monitor (default: %(default)s)')
+    parser.add_argument('url', nargs='?', default=None,
+                      help='URL of the stream to monitor')
     parser.add_argument('--stream_id', type=str, default=None,
                       help='Optional stream ID (default: auto-generated)')
     parser.add_argument('--audio_monitor', action='store_true',

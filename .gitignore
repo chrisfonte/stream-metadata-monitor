@@ -1,10 +1,32 @@
-*.pyc
+# Byte-compiled / optimized / DLL files
 __pycache__/
-.DS_Store
-*.log
-.env
-.venv/
+*.py[cod]
+
+# Virtual environment
 venv/
+.venv/
 env/
+ENV/
+
+# Distribution / packaging
+.audio_stream_monitor.egg-info/
+build/
+dist/
+
+# Output data
+data/
+*.log
 *.json
 *.txt
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+
+# Archive folder
+archive/
+
+# Ignore test_streams.txt in examples
+examples/test_streams.txt

@@ -16,64 +16,18 @@ A Python-based toolkit for monitoring and analyzing audio streams in real-time, 
 - 🎵 Robust extraction and display of audio properties (codec, bitrate, sample rate, channels)
 - 💾 Audio properties persist across restarts and are always displayed as "last known" if not currently available
 - 🗂️ JSON structure is designed for easy integration and historical tracking
-- 🗒️ **Basic file-based logging in silent mode:** Each stream logs to its own file (e.g., `groovesalad-256-mp3.log`) for easier debugging and monitoring.
-- 🎲 Test mode for randomly selecting streams from a test file
+- 🗒️ **Friendly log (_friendly.log):** All user-facing output is written to a friendly log file, which is tailed for live display. No direct terminal output.
+- 🛠️ **Advanced log (.log):** All advanced/debug/error output is (or will be) written to a separate advanced log file.
+- 🧑‍💻 **Section alignment:** Display output features clearly aligned and indented sections for Logs, Audio, and Now Playing.
+- 🆔 **Stream ID in JSON:** The `id` field is only included in the JSON if a real stream ID exists.
+- 🧹 **Cleaner code:** No print statements or direct logging to the terminal for display output.
 
-## Usage
+## Logging and Display
 
-### Basic Usage
-
-Monitor a stream (defaults to https://example.com/your-stream.mp3):
-```bash
-python3 stream_metadata.py
-```
-
-### Monitor a Custom Stream
-```bash
-python3 stream_metadata.py "https://ice6.somafm.com/groovesalad-256-mp3"
-```
-
-### Test Mode
-To test with random streams from a predefined list:
-```bash
-python3 stream_metadata.py --test
-```
-
-You'll need to create a `test_streams.txt` file in the same directory as the script, with one stream URL per line. For example:
-```
-https://stream1.example.com/stream1
-https://stream2.example.com/stream2
-https://stream3.example.com/stream3
-```
-
-Note: The `test_streams.txt` file should not be committed to version control as it may contain private or test-specific stream URLs.
-
-### Specify a Stream ID
-```bash
-python3 stream_metadata.py <stream_url> --stream_id <your_id>
-```
-
-### Enable/Disable Features
-- `--audio_monitor` : Enable audio playback
-- `--metadata_monitor` : Enable metadata display
-- `--audio_metrics` : Enable audio metrics (LUFS, etc.)
-- `--no_buffer` : Reduce FFmpeg buffering for lower latency
-- `--debug` : Enable debug output
-
-If no feature flags are specified, all features are enabled by default.
-
-### Running Multiple Streams in Parallel (with nohup)
-
-To monitor multiple streams at once in silent mode, use `nohup` to run each instance in the background. Each will write its own JSON and log file:
-
-```bash
-nohup python3 stream_metadata.py https://ice6.somafm.com/groovesalad-256-mp3 --silent &
-nohup python3 stream_metadata.py https://ice6.somafm.com/gsclassic-128-mp3 --silent &
-nohup python3 stream_metadata.py https://ice6.somafm.com/dronezone-256-mp3 --silent &
-```
-
-- Each instance will create a `.json` and `.log` file named after the stream.
-- You can review the log files (e.g., `tail -f groovesalad-256-mp3.log`) for status and debugging.
+- **Friendly log:** All user-facing output is written to a `<mount>_friendly.log` file. This file is always tailed for live display in the terminal. No direct print or logging to the terminal is used for display.
+- **Advanced log:** All advanced/debug/error output is (or will be) written to a separate `<mount>.log` file. This file is not tailed by default.
+- **Section alignment:** The display output features clearly aligned and indented sections for Logs, Audio, and Now Playing, making it easy to read.
+- **Stream ID in JSON:** The `id` field is only included in the JSON if a real stream ID exists (not just the mount name).
 
 ## JSON Structure
 
@@ -88,13 +42,17 @@ Each stream creates a JSON file with the following structure:
   },
   "stream": {
     "url": "...",
-    "id": "...",
+    "mount": "...",
+    "json_path": "...",
+    "log_path": "..._friendly.log",
+    "adv_log_path": "....log",
     "audio_properties": {
       "codec": "mp3",
       "sample_rate": 44100,
       "bitrate": 256,
       "channels": "stereo"
     }
+    // 'id' field is only present if a real stream ID exists
   },
   "metadata": {
     "current": {

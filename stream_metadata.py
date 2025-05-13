@@ -240,7 +240,10 @@ class StreamMetadata:
                     'channels': self.channels
                 }
             if 'stream' not in data:
-                data['stream'] = {'url': self.stream_url, 'id': self.stream_id}
+                stream_section = {'url': self.stream_url}
+                if self.stream_id:
+                    stream_section['id'] = self.stream_id
+                data['stream'] = stream_section
             if self.audio_properties:
                 data['stream']['audio_properties'] = self.audio_properties
             # Write back to file
@@ -322,34 +325,34 @@ class StreamMetadata:
                 return f"{label}: {last_known_value} (last known)"
             return f"{label}: unknown"
         lines = []
-        lines.append(f"Stream:")
-        lines.append(f"   URL: {stream_url}")
+        lines.append(f"🌐 Stream: {self.stream_url}")
         if stream_id:
-            lines.append(f"   ID: {stream_id}")
-        lines.append(f"   Mount: {mount}")
-        lines.append(f"   JSON: {json_path}")
-        lines.append(f"   Friendly log: {log_path}")
-        lines.append(f"   Advanced log: {getattr(self, 'adv_log_path', None)}")
-        lines.append(f"\U0001F3A7 Audio:")
-        lines.append(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
-        lines.append(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
-        lines.append(f"   {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
-        lines.append(f"   {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
+            lines.append(f"🆔 Stream ID: {stream_id}")
+        lines.append(f"🗂️  Mount: {mount}")
+        lines.append(f"📝 JSON path: {json_path}")
+        lines.append(f"🗂️  Logs:")
+        lines.append(f"      Friendly: {log_path}")
+        lines.append(f"      Advanced: {getattr(self, 'adv_log_path', None)}")
+        lines.append(f"🎧 Audio:")
+        lines.append(f"      {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
+        lines.append(f"      {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
+        lines.append(f"      {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
+        lines.append(f"      {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
         if metadata.get('type') == 'ad':
-            lines.append("\U0001F4E2 Now Playing (ad):")
+            lines.append("📢 Now Playing (ad):")
         else:
-            lines.append("\U0001F3B5 Now Playing (song):")
-        lines.append(f"   Artist: {metadata['artist']}")
-        lines.append(f"   Title: {metadata['title']}")
+            lines.append("🎵 Now Playing (song):")
+        lines.append(f"      Artist: {metadata['artist']}")
+        lines.append(f"      Title: {metadata['title']}")
         for k, v in metadata.items():
             if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream_url', 'stream_id',
                     'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu',
                     'artist', 'title', 'type', 'codec', 'sample_rate', 'bitrate', 'channels'):
                 continue
             if k == 'durationMilliseconds':
-                lines.append(f"   Duration: {self.format_duration(v)}")
+                lines.append(f"      Duration: {self.format_duration(v)}")
             else:
-                lines.append(f"   {self.format_field_label(k)} {v}")
+                lines.append(f"      {self.format_field_label(k)} {v}")
         if 'adswizzContext_json' in metadata:
             lines.append(f"  \U0001F5C2 adswizzContext (decoded):\n{metadata['adswizzContext_json']}")
         if ENABLE_AUDIO_METRICS:
@@ -358,10 +361,10 @@ class StreamMetadata:
             st_lufs = metadata['short_term_lufs']
             tp_db = metadata['true_peak_db']
             lra = metadata['loudness_range_lu']
-            lines.append(f"   Integrated LUFS: {lufs:.1f} LUFS" if lufs is not None else "   Integrated LUFS: N/A")
-            lines.append(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
-            lines.append(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
-            lines.append(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
+            lines.append(f"      Integrated LUFS: {lufs:.1f} LUFS" if lufs is not None else "      Integrated LUFS: N/A")
+            lines.append(f"      Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "      Short-term LUFS: N/A")
+            lines.append(f"      True Peak: {tp_db:.1f} dB" if tp_db is not None else "      True Peak: N/A")
+            lines.append(f"      Loudness Range: {lra:.1f} LU" if lra is not None else "      Loudness Range: N/A")
         history = data.get('metadata', {}).get('history', [])
         if history:
             lines.append("\nHistory (last 10):")
@@ -536,8 +539,9 @@ class StreamMetadata:
             + (f"🆔 Stream ID: {self.stream_id}\n" if self.stream_id and self.stream_id != self.mount else "")
             + f"🗂️  Mount: {self.mount}\n"
             + f"📝 JSON path: {self.json_path}\n"
-            + f"📄 Friendly log: {self.log_path}\n"
-            + f"🛠️  Advanced log: {self.adv_log_path}\n"
+            + f"🗂️  Logs:\n"
+            + f"      Friendly: {self.log_path}\n"
+            + f"      Advanced: {self.adv_log_path}\n"
             + f"📝 Metadata Monitor: {'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'}\n"
             + f"📊 Audio Metrics: {'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'}\n"
             + f"⏩ No Buffer: {'ENABLED' if NO_BUFFER else 'DISABLED'}\n"

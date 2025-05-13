@@ -12,7 +12,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "stream-metadata=audio_stream_monitor.cli:main",
+            "stream-metadata=audio_stream_monitor.cli.stream_cli:main",
         ],
     },
     author="Your Name",

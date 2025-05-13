@@ -21,6 +21,9 @@ A Python-based toolkit for monitoring and analyzing audio streams in real-time, 
 - 🧑‍💻 **Section alignment:** Display output features clearly aligned and indented sections for Logs, Audio, and Now Playing.
 - 🆔 **Stream ID in JSON:** The `id` field is only included in the JSON if a real stream ID exists.
 - 🧹 **Cleaner code:** No print statements or direct logging to the terminal for display output.
+- 🔀 **Multi-stream management:** Monitor multiple streams simultaneously with a stream manager.
+- 🎲 **Random test stream selection:** Generate configurations from a list of test streams.
+- 🔄 **Dynamic configuration:** Add, remove, or modify streams without restarting the manager.
 
 ## Logging and Display
 
@@ -80,6 +83,74 @@ Each stream creates a JSON file with the following structure:
 - Each event includes its own timestamp, artist, and title.
 - The history is displayed below the current playing info, excluding the currently playing event.
 
+## Multi-Stream Management
+
+The toolkit includes two additional scripts for managing multiple streams simultaneously:
+
+### generate_test_streams.py
+
+This script generates a configuration file for multiple streams that can be managed by the stream manager.
+
+```bash
+# Generate configuration for 5 streams with metadata and audio monitoring
+python3 generate_test_streams.py 5 --metadata_monitor --audio_monitor
+
+# Generate configuration for 3 premium MP3 streams with debug enabled
+python3 generate_test_streams.py 3 --premium --metadata_monitor --debug
+```
+
+The script produces a `stream_configs.json` file with the following structure:
+
+```json
+{
+  "streams": [
+    {
+      "url": "https://example.com/stream1.mp3",
+      "flags": {
+        "audio_monitor": true,
+        "metadata_monitor": true,
+        "audio_metrics": false,
+        "no_buffer": false,
+        "debug": false,
+        "silent": false
+      }
+    },
+    {
+      "url": "https://example.com/stream2-336296-mp3",
+      "stream_id": "336296",
+      "flags": {
+        "audio_monitor": true,
+        "metadata_monitor": true,
+        "audio_metrics": false,
+        "no_buffer": false,
+        "debug": false,
+        "silent": false
+      }
+    }
+  ]
+}
+```
+
+### manage_streams.py
+
+This script manages multiple instances of `stream_metadata.py` based on the configuration in `stream_configs.json`.
+
+```bash
+# Start managing streams with default check interval (30 seconds)
+python3 manage_streams.py
+
+# Start managing streams with a 15-second check interval
+python3 manage_streams.py --check-interval 15
+```
+
+Features:
+- Automatically starts instances for all streams in the configuration
+- Monitors stream instances and restarts them if they crash
+- Checks for configuration changes every 30 seconds (configurable)
+- Stops instances for streams no longer in the configuration
+- Creates individual log files for each stream
+- Provides a clean shutdown with signal handling
+
 ## Example Output
 ```
 [2025-05-09 16:42:36]
@@ -123,6 +194,32 @@ cd stream-metadata-monitor
 - Ad events are logged and displayed just like songs.
 - Audio properties are always available under `stream.audio_properties` and persist across restarts.
 - Each stream instance in silent mode logs to its own file for easier debugging.
+
+### Multi-Stream Management
+
+To monitor multiple streams simultaneously:
+
+1. Create a configuration file:
+   ```bash
+   python3 generate_test_streams.py <num_streams> [options]
+   ```
+
+2. Launch the stream manager:
+   ```bash
+   python3 manage_streams.py [--check-interval seconds]
+   ```
+
+3. Modify the configuration file to add, remove, or update streams:
+   - The manager checks for changes every 30 seconds by default
+   - Streams no longer in the configuration will be stopped
+   - New streams will be started
+   - Streams with changed configurations will be restarted
+
+4. View individual stream logs:
+   ```bash
+   tail -f <stream_id>_friendly.log  # For user-friendly output
+   tail -f <stream_id>.log           # For detailed/debug output
+   ```
 
 ## Troubleshooting
 - If you see no metadata, try a different stream URL.

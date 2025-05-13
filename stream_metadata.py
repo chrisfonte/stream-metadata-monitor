@@ -133,19 +133,23 @@ def get_display_logger(log_path):
 class StreamMetadata:
     def __init__(self, stream_url=None, stream_id=None):
         # --- In test mode, select a random stream before anything else ---
-        if TEST_MODE and (not stream_url or stream_url == ''):
-            stream_url = self.get_random_test_stream()
-        # --- Extract stream_id and mount as early as possible ---
         self.stream_url = stream_url
         self.stream_id = stream_id
         self.mount = None
-        if self.stream_url:
+        
+        if TEST_MODE:
+            # Get a random stream and ID in test mode
+            random_stream_info = self.get_random_test_stream()
+            self.stream_url = random_stream_info['url']
+            # In test mode, use the extracted ID or the mount as the stream_id
             self.mount = self.stream_url.split('/')[-1]
-            # In test mode, if no stream_id is provided, use the mount as the stream_id
-            if TEST_MODE and not self.stream_id:
-                self.stream_id = self.mount
-            # Otherwise, try to extract stream_id from URL if not provided
-            elif not self.stream_id:
+            extracted_id = self.extract_stream_id_from_url(self.stream_url)
+            self.stream_id = random_stream_info.get('id') or extracted_id or self.mount
+        elif self.stream_url:
+            # Normal mode processing
+            self.mount = self.stream_url.split('/')[-1]
+            # Try to extract stream_id from URL if not provided
+            if not self.stream_id:
                 extracted_id = self.extract_stream_id_from_url(self.stream_url)
                 if extracted_id:
                     self.stream_id = extracted_id
@@ -354,12 +358,14 @@ class StreamMetadata:
         metadata['type'] = current_type
         current_key = f"{current_artist}|{current_title}|{current_type}"
         last_key = f"{self.last_artist}|{self.last_title}|{self.last_type}"
+        current_time = datetime.now()
 
-        # Always process the very first metadata event after launch
+        # Initialize has_seen_first_metadata if it doesn't exist
         if not hasattr(self, 'has_seen_first_metadata'):
             self.has_seen_first_metadata = True
-        elif current_key == last_key and current_key:
-            return
+        
+        # Always update the last_update_time
+        self.last_update_time = current_time
 
         self.last_metadata = metadata.copy()
         self.last_artist = current_artist
@@ -383,14 +389,24 @@ class StreamMetadata:
                     'true_peak_db': self.audio_metrics['true_peak_db'],
                     'loudness_range_lu': self.audio_metrics['loudness_range_lu']
                 })
+        # Always write to JSON to ensure it's up to date
         self.write_json_with_history(complete_metadata)
+        
+        # Display metadata from the JSON file to ensure consistency
         if not args.silent:
-            self.display_metadata(complete_metadata)
+            self.display_metadata()
 
-    def display_metadata(self, metadata: Dict) -> None:
+    def display_metadata(self) -> None:
+        """Display metadata from the JSON file to ensure consistency"""
         data = self.read_json() or {}
         server = data.get('server', {})
         stream = data.get('stream', {})
+        metadata = data.get('metadata', {}).get('current', {}) or {}
+        
+        if not metadata:
+            self.logger.warning("No metadata found in JSON for display")
+            return
+            
         stream_url = stream.get('url', self.stream_url)
         stream_id = stream.get('id', None)
         mount = stream.get('mount', getattr(self, 'mount', None))
@@ -434,8 +450,8 @@ class StreamMetadata:
             lines.append("📢 Now Playing (ad):")
         else:
             lines.append("🎵 Now Playing (song):")
-        lines.append(f"      Artist: {metadata['artist']}")
-        lines.append(f"      Title: {metadata['title']}")
+        lines.append(f"      Artist: {metadata.get('artist', '')}")
+        lines.append(f"      Title: {metadata.get('title', '')}")
         for k, v in metadata.items():
             if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream_url', 'stream_id',
                     'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu',
@@ -567,37 +583,41 @@ class StreamMetadata:
         except Exception as e:
             logging.error(f"Error parsing ICY audio info: {e}")
 
-    def get_random_test_stream(self) -> str:
-        """Get a random stream URL from test_streams.txt"""
+    def get_random_test_stream(self) -> dict:
+        """Get a random stream URL and ID from test_streams.txt
+        
+        Returns a dict with 'url' and optional 'id' keys
+        """
         try:
             with open('test_streams.txt', 'r') as f:
-                streams = [line.strip() for line in f if line.strip()]
-            if streams:
-                return random.choice(streams)
+                lines = [line.strip() for line in f if line.strip()]
+                
+            if lines:
+                # Check if any line contains URL and ID separated by comma or tab
+                stream_info = random.choice(lines)
+                if ',' in stream_info:
+                    parts = stream_info.split(',', 1)
+                    return {'url': parts[0].strip(), 'id': parts[1].strip()}
+                elif '\t' in stream_info:
+                    parts = stream_info.split('\t', 1)
+                    return {'url': parts[0].strip(), 'id': parts[1].strip()}
+                else:
+                    # Just a URL with no ID
+                    return {'url': stream_info}
         except Exception as e:
             logging.error(f"Error reading test streams: {e}")
-        return "https://rfcm.streamguys1.com/00hits-mp3"  # Fallback to default
+            
+        # Fallback to default
+        return {'url': "https://rfcm.streamguys1.com/00hits-mp3"}
 
     def run(self):
         if TEST_MODE:
-            self.stream_url = self.get_random_test_stream()
+            # We already selected the random stream in __init__
             self.logger.info("Test mode: Using random stream URL", 
                            stream_url=self.stream_url,
+                           stream_id=self.stream_id,
+                           mount=self.mount,
                            test_mode=True)
-            # Update paths based on new stream URL
-            self.mount = self.stream_url.split('/')[-1]
-            if self.stream_id:
-                self.json_path = f"{self.stream_id}.json"
-                self.log_path = f"{self.stream_id}_friendly.log"
-                self.adv_log_path = f"{self.stream_id}.log"
-            else:
-                self.json_path = f"{self.mount}.json"
-                self.log_path = f"{self.mount}_friendly.log"
-                self.adv_log_path = f"{self.mount}.log"
-            # In test mode, use mount as stream_id if none provided
-            if not self.stream_id:
-                self.stream_id = self.mount
-                self.logger.set_stream_info(self.stream_id, self.mount)
         else:
             if self.stream_url:
                 # Update mount and paths
@@ -745,7 +765,7 @@ class StreamMetadata:
                         self.last_metadata = minimal_metadata.copy()
                         self.write_json_with_history(minimal_metadata)
                         if not args.silent:
-                            self.display_metadata(minimal_metadata)
+                            self.display_metadata()
                         self.logger.info("Created minimal metadata entry", 
                                        metadata=minimal_metadata)
                     self.audio_levels_displayed = True
@@ -1102,18 +1122,6 @@ if __name__ == "__main__":
     monitor_thread = threading.Thread(target=monitor.run, daemon=True)
     monitor_thread.start()
 
-    # Always tail the friendly log unless in silent mode
-    if not args.silent:
-        friendly_log_path = monitor.log_path
-        if friendly_log_path:
-            try:
-                tail_process = subprocess.Popen(['tail', '-n', '40', '-f', friendly_log_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True)
-                for line in iter(tail_process.stdout.readline, ''):
-                    print(line, end='', flush=True)
-            except KeyboardInterrupt:
-                tail_process.terminate()
-                tail_process.wait()
-    else:
-        # If in silent mode, just wait for the monitor to finish
-        monitor_thread.join()
+    # Wait for the monitor thread to finish
+    monitor_thread.join()
 

@@ -30,8 +30,20 @@ NO_BUFFER = False
 DEBUG_MODE = False
 TEST_MODE = False
 
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+# Remove or restrict the root logger setup
+# logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
+def get_display_logger(log_path):
+    display_logger = logging.getLogger('display_logger')
+    display_logger.setLevel(logging.INFO)
+    # Remove any existing handlers
+    display_logger.handlers = []
+    file_handler = logging.FileHandler(log_path)
+    formatter = logging.Formatter('%(message)s')
+    file_handler.setFormatter(formatter)
+    display_logger.addHandler(file_handler)
+    display_logger.propagate = False
+    return display_logger
 
 class StreamMetadata:
     def __init__(self, stream_url=None, stream_id=None):
@@ -73,17 +85,14 @@ class StreamMetadata:
             # Use stream_id for JSON name if available, otherwise use mount
             if self.stream_id:
                 self.json_path = f"{self.stream_id}.json"
-                self.log_path = f"{self.stream_id}.log"
+                self.log_path = f"{self.stream_id}-friendly.log"
             else:
                 self.json_path = f"{self.mount}.json"
-                self.log_path = f"{self.mount}.log"
+                self.log_path = f"{self.mount}-friendly.log"
         else:
             self.mount = None
             self.json_path = None
             self.log_path = None
-
-        signal.signal(signal.SIGINT, self.handle_signal)
-        signal.signal(signal.SIGTERM, self.handle_signal)
 
     def extract_stream_id_from_url(self, url: str) -> Optional[str]:
         """Extract stream ID from URL patterns.
@@ -298,64 +307,56 @@ class StreamMetadata:
             elif last_known_value and last_known_value != 'unknown':
                 return f"{label}: {last_known_value} (last known)"
             return f"{label}: unknown"
-        print(f"\n[{metadata['timestamp']}]")
-        print(f"Stream:")
-        print(f"   URL: {stream_url}")
+        lines = []
+        lines.append(f"Stream:")
+        lines.append(f"   URL: {stream_url}")
         if stream_id:
-            print(f"   ID: {stream_id}")
-        print(f"   Mount: {mount}")
-        print(f"   JSON: {json_path}")
-        print(f"   Log: {log_path}")
-        print(f"\U0001F3A7 Audio:")
-        print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
-        print(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
-        print(f"   {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
-        print(f"   {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
+            lines.append(f"   ID: {stream_id}")
+        lines.append(f"   Mount: {mount}")
+        lines.append(f"   JSON: {json_path}")
+        lines.append(f"   Log: {log_path}")
+        lines.append(f"\U0001F3A7 Audio:")
+        lines.append(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
+        lines.append(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
+        lines.append(f"   {show_prop('Sample Rate', self.format_sample_rate(self.sample_rate), self.format_sample_rate(audio_props.get('sample_rate', 'unknown')))}")
+        lines.append(f"   {show_prop('Channels', self.channels, audio_props.get('channels', 'unknown'))}")
         if metadata.get('type') == 'ad':
-            print("\U0001F4E2 Now Playing (ad):")
+            lines.append("\U0001F4E2 Now Playing (ad):")
         else:
-            print("\U0001F3B5 Now Playing (song):")
-        print(f"   Artist: {metadata['artist']}")
-        print(f"   Title: {metadata['title']}")
-
-        # Show all other fields except special fields, artist, title
+            lines.append("\U0001F3B5 Now Playing (song):")
+        lines.append(f"   Artist: {metadata['artist']}")
+        lines.append(f"   Title: {metadata['title']}")
         for k, v in metadata.items():
             if k in ('adw_ad', 'adswizzContext_json', 'timestamp', 'stream_url', 'stream_id',
                     'integrated_lufs', 'short_term_lufs', 'true_peak_db', 'loudness_range_lu',
                     'artist', 'title', 'type', 'codec', 'sample_rate', 'bitrate', 'channels'):
                 continue
             if k == 'durationMilliseconds':
-                print(f"   Duration: {self.format_duration(v)}")
+                lines.append(f"   Duration: {self.format_duration(v)}")
             else:
-                print(f"   {self.format_field_label(k)} {v}")
-
-        # Show adswizzContext_json if present
+                lines.append(f"   {self.format_field_label(k)} {v}")
         if 'adswizzContext_json' in metadata:
-            print(f"  \U0001F5C2\uFE0F adswizzContext (decoded):\n{metadata['adswizzContext_json']}")
-
-        # Only display audio metrics if enabled
+            lines.append(f"  \U0001F5C2 adswizzContext (decoded):\n{metadata['adswizzContext_json']}")
         if ENABLE_AUDIO_METRICS:
-            print("\U0001F4CA Audio Levels:")
+            lines.append("\U0001F4CA Audio Levels:")
             lufs = metadata['integrated_lufs']
             st_lufs = metadata['short_term_lufs']
             tp_db = metadata['true_peak_db']
             lra = metadata['loudness_range_lu']
-            print(f"   Integrated LUFS: {lufs:.1f} LUFS" if lufs is not None else "   Integrated LUFS: N/A")
-            print(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
-            print(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
-            print(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
-
-        # Display history, excluding the currently playing event
+            lines.append(f"   Integrated LUFS: {lufs:.1f} LUFS" if lufs is not None else "   Integrated LUFS: N/A")
+            lines.append(f"   Short-term LUFS: {st_lufs:.1f} LUFS" if st_lufs is not None else "   Short-term LUFS: N/A")
+            lines.append(f"   True Peak: {tp_db:.1f} dB" if tp_db is not None else "   True Peak: N/A")
+            lines.append(f"   Loudness Range: {lra:.1f} LU" if lra is not None else "   Loudness Range: N/A")
         history = data.get('metadata', {}).get('history', [])
         if history:
-            print("\nHistory (last 10):")
+            lines.append("\nHistory (last 10):")
             for event in reversed(history):
                 if event.get('type') == 'song':
-                    print(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
+                    lines.append(f"  [{event['timestamp']}] {event['artist']} - {event['title']}")
                 else:
-                    print(f"  [{event['timestamp']}] Ad: {event.get('adId', 'Unknown')} ({self.format_duration(event.get('durationMilliseconds', '0'))})")
-        print("-" * 50)
-        sys.stdout.flush()
+                    lines.append(f"  [{event['timestamp']}] Ad: {event.get('adId', 'Unknown')} ({self.format_duration(event.get('durationMilliseconds', '0'))})")
+        lines.append("-" * 50)
+        self.display_logger.info("\n".join(lines))
 
     def format_codec_display(self, codec: str) -> str:
         """Format codec for display"""
@@ -461,10 +462,10 @@ class StreamMetadata:
             self.mount = self.stream_url.split('/')[-1]
             if self.stream_id:
                 self.json_path = f"{self.stream_id}.json"
-                self.log_path = f"{self.stream_id}.log"
+                self.log_path = f"{self.stream_id}-friendly.log"
             else:
                 self.json_path = f"{self.mount}.json"
-                self.log_path = f"{self.mount}.log"
+                self.log_path = f"{self.mount}-friendly.log"
             # In test mode, use mount as stream_id if none provided
             if not self.stream_id:
                 self.stream_id = self.mount
@@ -474,17 +475,17 @@ class StreamMetadata:
                 self.mount = self.stream_url.split('/')[-1]
                 if self.stream_id:
                     self.json_path = f"{self.stream_id}.json"
-                    self.log_path = f"{self.stream_id}.log"
+                    self.log_path = f"{self.stream_id}-friendly.log"
                 else:
                     self.json_path = f"{self.mount}.json"
-                    self.log_path = f"{self.mount}.log"
+                    self.log_path = f"{self.mount}-friendly.log"
                 # Only try to extract stream ID if none was provided
                 if not self.stream_id:
                     self.stream_id = self.extract_stream_id_from_url(self.stream_url)
                     # Update paths if we found a stream ID
                     if self.stream_id:
                         self.json_path = f"{self.stream_id}.json"
-                        self.log_path = f"{self.stream_id}.log"
+                        self.log_path = f"{self.stream_id}-friendly.log"
 
         if not self.stream_url:
             logging.error("No stream URL provided and not in test mode")
@@ -494,24 +495,41 @@ class StreamMetadata:
             logging.error("No valid paths for JSON/log files")
             return
 
-        # Remove redundant plain INFO logs above
-        # logging.info(f"Stream URL: {self.stream_url}")
-        # logging.info(f"Stream ID: {self.stream_id}")
-        # logging.info(f"Mount: {self.mount}")
-        # logging.info(f"JSON path: {self.json_path}")
-        # logging.info(f"Log path: {self.log_path}")
-
-        # Icon-enhanced info block
-        logging.info(f"🌐 Stream: {self.stream_url}")
-        if self.stream_id and self.stream_id != self.mount:
-            logging.info(f"🆔 Stream ID: {self.stream_id}")
-        logging.info(f"🗂️  Mount: {self.mount}")
-        logging.info(f"📝 JSON path: {self.json_path}")
-        logging.info(f"📄 Log path: {self.log_path}")
-        logging.info(f"📝 Metadata Monitor: {'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'}")
-        logging.info(f"📊 Audio Metrics: {'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'}")
-        logging.info(f"⏩ No Buffer: {'ENABLED' if NO_BUFFER else 'DISABLED'}")
-        logging.info(f"🔊 Audio Monitor: {'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'}")
+        # Set up display logger once, after log_path is set
+        self.display_logger = logging.getLogger(f'display_logger_{id(self)}')
+        self.display_logger.setLevel(logging.INFO)
+        self.display_logger.handlers = []
+        if self.log_path:
+            file_handler = logging.FileHandler(self.log_path)
+            # Custom formatter: timestamp on its own line
+            class BlockFormatter(logging.Formatter):
+                def format(self, record):
+                    ts = self.formatTime(record, self.datefmt)
+                    return f"[{ts}]\n{record.getMessage()}"
+            formatter = BlockFormatter()
+            file_handler.setFormatter(formatter)
+            self.display_logger.addHandler(file_handler)
+            self.display_logger.propagate = False
+        # Icon-enhanced info block (write to log file as well)
+        self.display_logger.info(
+            f"🌐 Stream: {self.stream_url}\n"
+            + (f"🆔 Stream ID: {self.stream_id}\n" if self.stream_id and self.stream_id != self.mount else "")
+            + f"🗂️  Mount: {self.mount}\n"
+            + f"📝 JSON path: {self.json_path}\n"
+            + f"📄 Log path: {self.log_path}\n"
+            + f"📝 Metadata Monitor: {'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'}\n"
+            + f"📊 Audio Metrics: {'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'}\n"
+            + f"⏩ No Buffer: {'ENABLED' if NO_BUFFER else 'DISABLED'}\n"
+            + f"🔊 Audio Monitor: {'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'}\n"
+            + f"▶️  Starting audio playback..."
+        )
+        # Tail the log file for live display if not in silent mode
+        if not ('--silent' in sys.argv):
+            # Start tail -n +1 -f so we see the whole log from the start
+            self.tail_proc = subprocess.Popen(['tail', '-n', '+1', '-f', self.log_path])
+            # Suppress all direct output to the terminal
+            sys.stdout = open('/dev/null', 'w')
+            sys.stderr = open('/dev/null', 'w')
 
         # Initialize JSON with startup info
         startup_info = {

@@ -66,17 +66,49 @@ class StreamMetadata:
         self.audio_info_locked = False  # New flag to lock in real codec info
 
         # Set up paths
-        if stream_id:
-            self.stream_id = stream_id
-            self.json_path = f"{self.stream_id}.json"
-            self.log_path = f"{self.stream_id}.log"
+        self.stream_id = stream_id  # Use provided stream_id if any
+        if self.stream_url:
+            # Get the mount point (last part of URL)
+            self.mount = self.stream_url.split('/')[-1]
+            # Use stream_id for JSON name if available, otherwise use mount
+            if self.stream_id:
+                self.json_path = f"{self.stream_id}.json"
+                self.log_path = f"{self.stream_id}.log"
+            else:
+                self.json_path = f"{self.mount}.json"
+                self.log_path = f"{self.mount}.log"
         else:
-            self.stream_id = None
+            self.mount = None
             self.json_path = None
             self.log_path = None
 
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
+
+    def extract_stream_id_from_url(self, url: str) -> Optional[str]:
+        """Extract stream ID from URL patterns.
+        
+        Patterns:
+        - Numeric IDs that appear before -icy or -mp3
+        - Examples: 335488, 329464, 336296
+        - Must be a sequence of digits without dashes
+        
+        Returns None if no ID pattern is found.
+        """
+        if not url:
+            return None
+            
+        # Get the last part of the URL (after last /)
+        mount = url.split('/')[-1]
+        
+        # Look for numeric pattern before -icy or -mp3
+        # This will match sequences of digits that are followed by -icy or -mp3
+        numeric_match = re.search(r'(\d+)(?:-icy|-mp3)$', mount)
+        if numeric_match:
+            return numeric_match.group(1)
+                
+        # If no pattern matches, return None
+        return None
 
     def generate_stream_id(self):
         # Generate NA followed by 4 random digits
@@ -241,7 +273,11 @@ class StreamMetadata:
         data = self.read_json() or {}
         server = data.get('server', {})
         stream = data.get('stream', {})
-        stream_url = self.stream_url
+        stream_url = stream.get('url', self.stream_url)
+        stream_id = stream.get('id', None)
+        mount = stream.get('mount', getattr(self, 'mount', None))
+        json_path = stream.get('json_path', getattr(self, 'json_path', None))
+        log_path = stream.get('log_path', getattr(self, 'log_path', None))
         audio_props = stream.get('audio_properties', {})
         def show_bitrate(value, last_known_value):
             def fmt(val):
@@ -265,7 +301,11 @@ class StreamMetadata:
         print(f"\n[{metadata['timestamp']}]")
         print(f"Stream:")
         print(f"   URL: {stream_url}")
-        print(f"   ID: {stream.get('id', 'unknown')}")
+        if stream_id:
+            print(f"   ID: {stream_id}")
+        print(f"   Mount: {mount}")
+        print(f"   JSON: {json_path}")
+        print(f"   Log: {log_path}")
         print(f"\U0001F3A7 Audio:")
         print(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
         print(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
@@ -418,10 +458,33 @@ class StreamMetadata:
             self.stream_url = self.get_random_test_stream()
             logging.info(f"Test mode: Using random stream URL: {self.stream_url}")
             # Update paths based on new stream URL
-            mount = self.stream_url.split('/')[-1]
-            self.json_path = f"{mount}.json"
-            self.log_path = f"{mount}.log"
-            self.stream_id = mount  # Use mount as stream_id in test mode
+            self.mount = self.stream_url.split('/')[-1]
+            if self.stream_id:
+                self.json_path = f"{self.stream_id}.json"
+                self.log_path = f"{self.stream_id}.log"
+            else:
+                self.json_path = f"{self.mount}.json"
+                self.log_path = f"{self.mount}.log"
+            # In test mode, use mount as stream_id if none provided
+            if not self.stream_id:
+                self.stream_id = self.mount
+        else:
+            if self.stream_url:
+                # Update mount and paths
+                self.mount = self.stream_url.split('/')[-1]
+                if self.stream_id:
+                    self.json_path = f"{self.stream_id}.json"
+                    self.log_path = f"{self.stream_id}.log"
+                else:
+                    self.json_path = f"{self.mount}.json"
+                    self.log_path = f"{self.mount}.log"
+                # Only try to extract stream ID if none was provided
+                if not self.stream_id:
+                    self.stream_id = self.extract_stream_id_from_url(self.stream_url)
+                    # Update paths if we found a stream ID
+                    if self.stream_id:
+                        self.json_path = f"{self.stream_id}.json"
+                        self.log_path = f"{self.stream_id}.log"
 
         if not self.stream_url:
             logging.error("No stream URL provided and not in test mode")
@@ -430,6 +493,25 @@ class StreamMetadata:
         if not self.json_path or not self.log_path:
             logging.error("No valid paths for JSON/log files")
             return
+
+        # Remove redundant plain INFO logs above
+        # logging.info(f"Stream URL: {self.stream_url}")
+        # logging.info(f"Stream ID: {self.stream_id}")
+        # logging.info(f"Mount: {self.mount}")
+        # logging.info(f"JSON path: {self.json_path}")
+        # logging.info(f"Log path: {self.log_path}")
+
+        # Icon-enhanced info block
+        logging.info(f"🌐 Stream: {self.stream_url}")
+        if self.stream_id and self.stream_id != self.mount:
+            logging.info(f"🆔 Stream ID: {self.stream_id}")
+        logging.info(f"🗂️  Mount: {self.mount}")
+        logging.info(f"📝 JSON path: {self.json_path}")
+        logging.info(f"📄 Log path: {self.log_path}")
+        logging.info(f"📝 Metadata Monitor: {'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'}")
+        logging.info(f"📊 Audio Metrics: {'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'}")
+        logging.info(f"⏩ No Buffer: {'ENABLED' if NO_BUFFER else 'DISABLED'}")
+        logging.info(f"🔊 Audio Monitor: {'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'}")
 
         # Initialize JSON with startup info
         startup_info = {
@@ -448,20 +530,26 @@ class StreamMetadata:
         # Read existing history if file exists
         existing_data = self.read_json() or {}
         existing_history = existing_data.get('metadata', {}).get('history', [])
-        
         # Read existing audio properties if available
         stream_section = existing_data.get('stream', {})
         if 'audio_properties' in stream_section:
             self.audio_properties = stream_section['audio_properties'].copy()
 
+        # Write all stream info fields to JSON
+        stream_info = {
+            'url': self.stream_url,
+            'mount': self.mount,
+            'json_path': self.json_path,
+            'log_path': self.log_path,
+            'audio_properties': self.audio_properties
+        }
+        if self.stream_id:
+            stream_info['id'] = self.stream_id
+
         # Initialize JSON with preserved history and current
         data = {
             'server': startup_info,
-            'stream': {
-                'url': self.stream_url,
-                'id': self.stream_id,
-                'audio_properties': self.audio_properties
-            },
+            'stream': stream_info,
             'metadata': {
                 'current': None,
                 'history': existing_history  # Preserve existing history
@@ -478,18 +566,6 @@ class StreamMetadata:
             root_logger = logging.getLogger()
             root_logger.addHandler(file_handler)
             root_logger.setLevel(logging.INFO)
-
-        buffering_status = 'ENABLED' if NO_BUFFER else 'DISABLED'
-        audio_monitor_status = 'ENABLED' if ENABLE_AUDIO_MONITOR else 'DISABLED'
-        metadata_status = 'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'
-        audio_metrics_status = 'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'
-        # Output order and labels as requested, with icons
-        logging.info(f"🌐 Stream: {self.stream_url}")
-        logging.info(f"🆔 Stream ID: {self.stream_id}")
-        logging.info(f"📝 Metadata Monitor: {metadata_status}")
-        logging.info(f"📊 Audio Metrics: {audio_metrics_status}")
-        logging.info(f"⏩ No Buffer: {buffering_status}")
-        logging.info(f"🔊 Audio Monitor: {audio_monitor_status}")
 
         try:
             # Start metadata monitor
@@ -750,7 +826,7 @@ class StreamMetadata:
             if NO_BUFFER:
                 cmd[1:1] = ['-fflags', 'nobuffer']
 
-            logging.info("Starting audio playback...")
+            logging.info(f"▶️  Starting audio playback...")
             self.ffmpeg_audio_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,

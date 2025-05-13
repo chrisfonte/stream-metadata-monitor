@@ -85,14 +85,28 @@ class StreamMetadata:
             # Use stream_id for JSON name if available, otherwise use mount
             if self.stream_id:
                 self.json_path = f"{self.stream_id}.json"
-                self.log_path = f"{self.stream_id}-friendly.log"
+                self.log_path = f"{self.stream_id}_friendly.log"
+                self.adv_log_path = f"{self.stream_id}.log"
             else:
                 self.json_path = f"{self.mount}.json"
-                self.log_path = f"{self.mount}-friendly.log"
+                self.log_path = f"{self.mount}_friendly.log"
+                self.adv_log_path = f"{self.mount}.log"
         else:
             self.mount = None
             self.json_path = None
             self.log_path = None
+            self.adv_log_path = None
+
+        # Set up advanced logger for debug/error
+        self.adv_logger = logging.getLogger(f'adv_logger_{id(self)}')
+        self.adv_logger.setLevel(logging.DEBUG)
+        self.adv_logger.handlers = []
+        if self.adv_log_path:
+            adv_file_handler = logging.FileHandler(self.adv_log_path)
+            adv_formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
+            adv_file_handler.setFormatter(adv_formatter)
+            self.adv_logger.addHandler(adv_file_handler)
+        self.adv_logger.propagate = False
 
     def extract_stream_id_from_url(self, url: str) -> Optional[str]:
         """Extract stream ID from URL patterns.
@@ -314,7 +328,8 @@ class StreamMetadata:
             lines.append(f"   ID: {stream_id}")
         lines.append(f"   Mount: {mount}")
         lines.append(f"   JSON: {json_path}")
-        lines.append(f"   Log: {log_path}")
+        lines.append(f"   Friendly log: {log_path}")
+        lines.append(f"   Advanced log: {getattr(self, 'adv_log_path', None)}")
         lines.append(f"\U0001F3A7 Audio:")
         lines.append(f"   {show_prop('Codec', self.format_codec_display(self.codec), self.format_codec_display(audio_props.get('codec', 'unknown')))}")
         lines.append(f"   {show_bitrate(self.bitrate, audio_props.get('bitrate', 'unknown'))}")
@@ -462,10 +477,12 @@ class StreamMetadata:
             self.mount = self.stream_url.split('/')[-1]
             if self.stream_id:
                 self.json_path = f"{self.stream_id}.json"
-                self.log_path = f"{self.stream_id}-friendly.log"
+                self.log_path = f"{self.stream_id}_friendly.log"
+                self.adv_log_path = f"{self.stream_id}.log"
             else:
                 self.json_path = f"{self.mount}.json"
-                self.log_path = f"{self.mount}-friendly.log"
+                self.log_path = f"{self.mount}_friendly.log"
+                self.adv_log_path = f"{self.mount}.log"
             # In test mode, use mount as stream_id if none provided
             if not self.stream_id:
                 self.stream_id = self.mount
@@ -475,17 +492,20 @@ class StreamMetadata:
                 self.mount = self.stream_url.split('/')[-1]
                 if self.stream_id:
                     self.json_path = f"{self.stream_id}.json"
-                    self.log_path = f"{self.stream_id}-friendly.log"
+                    self.log_path = f"{self.stream_id}_friendly.log"
+                    self.adv_log_path = f"{self.stream_id}.log"
                 else:
                     self.json_path = f"{self.mount}.json"
-                    self.log_path = f"{self.mount}-friendly.log"
+                    self.log_path = f"{self.mount}_friendly.log"
+                    self.adv_log_path = f"{self.mount}.log"
                 # Only try to extract stream ID if none was provided
                 if not self.stream_id:
                     self.stream_id = self.extract_stream_id_from_url(self.stream_url)
                     # Update paths if we found a stream ID
                     if self.stream_id:
                         self.json_path = f"{self.stream_id}.json"
-                        self.log_path = f"{self.stream_id}-friendly.log"
+                        self.log_path = f"{self.stream_id}_friendly.log"
+                        self.adv_log_path = f"{self.stream_id}.log"
 
         if not self.stream_url:
             logging.error("No stream URL provided and not in test mode")
@@ -516,7 +536,8 @@ class StreamMetadata:
             + (f"🆔 Stream ID: {self.stream_id}\n" if self.stream_id and self.stream_id != self.mount else "")
             + f"🗂️  Mount: {self.mount}\n"
             + f"📝 JSON path: {self.json_path}\n"
-            + f"📄 Log path: {self.log_path}\n"
+            + f"📄 Friendly log: {self.log_path}\n"
+            + f"🛠️  Advanced log: {self.adv_log_path}\n"
             + f"📝 Metadata Monitor: {'ENABLED' if ENABLE_METADATA_MONITOR else 'DISABLED'}\n"
             + f"📊 Audio Metrics: {'ENABLED' if ENABLE_AUDIO_METRICS else 'DISABLED'}\n"
             + f"⏩ No Buffer: {'ENABLED' if NO_BUFFER else 'DISABLED'}\n"
@@ -559,6 +580,7 @@ class StreamMetadata:
             'mount': self.mount,
             'json_path': self.json_path,
             'log_path': self.log_path,
+            'adv_log_path': self.adv_log_path,
             'audio_properties': self.audio_properties
         }
         if self.stream_id:
